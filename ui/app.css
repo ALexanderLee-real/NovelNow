@@ -220,6 +220,22 @@ html[data-theme="light"] .bg-grain { opacity: 0.09; }
 .mini-row + .mini-row { margin-top: 5px; }
 .mini-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* ---------- 语言选择 ---------- */
+.lang-row { padding: 0; }
+.lang-wrap {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; width: 100%; font-size: 11.5px; color: var(--text-3); cursor: pointer;
+}
+.lang-sel {
+  appearance: none; -webkit-appearance: none;
+  max-width: 118px; padding: 3px 6px; font-size: 11.5px; font-family: inherit;
+  color: var(--text); background: var(--input-bg);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  cursor: pointer; transition: border-color var(--dur-fast) var(--ease-out);
+}
+.lang-sel:hover, .lang-sel:focus { border-color: var(--accent); outline: none; }
+.lang-sel option { color: #222; background: #fff; }
+
 /* ---------- 内容区 ---------- */
 .content {
   position: relative;
