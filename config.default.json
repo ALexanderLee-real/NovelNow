@@ -1,0 +1,14 @@
+{
+  "ai": {
+    "api_url": "https://api.deepseek.com",
+    "api_key": "",
+    "model": "deepseek-flash",
+    "temperature": 0.7,
+    "max_tokens": 8192,
+    "timeout": 120
+  },
+  "projects_dir": "",
+  "language": "zh-CN",
+  "auto_save_interval": 30,
+  "enable_consistency_check": 0
+}

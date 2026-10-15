@@ -1,0 +1,23 @@
+# 让 Git 正确识别文本与二进制，避免 diff 里出现乱码或 CRLF 抖动
+* text=auto
+
+# 源码统一按文本处理（文件带 UTF-8 BOM，注释与字符串均为中文）
+*.c      text
+*.h      text
+*.js     text
+*.css    text
+*.html   text
+*.json   text
+*.md     text
+*.rc     text
+*.manifest text
+Makefile text
+
+# Windows 批处理必须保持 CRLF，否则 cmd 解析会出问题
+*.bat    text eol=crlf
+
+# 二进制资源
+*.exe    binary
+*.dll    binary
+*.ico    binary
+*.o      binary

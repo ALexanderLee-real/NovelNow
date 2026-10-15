@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>novelnow · AI 小说写作助手</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ===== 背景层（纯静态：毛玻璃容器内不放常驻动画，否则 backdrop 会被反复重采样） ===== -->
+<div class="bg-base"></div>
+<div class="bg-aurora"></div>
+<div class="bg-grain"></div>
+
+<div class="app">
+
+  <!-- ===== 侧边栏 ===== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          <path d="M9 7h7M9 11h5"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">novelnow</div>
+        <div class="brand-sub" id="brandSub">未打开项目</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item is-active" data-page="idea">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
+        <span>创意</span>
+        <em class="nav-badge" data-badge="idea"></em>
+      </button>
+      <button class="nav-item" data-page="plan">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        <span>方案</span>
+        <em class="nav-badge" data-badge="plan"></em>
+      </button>
+      <button class="nav-item" data-page="outline">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v12M6 12h12"/><circle cx="12" cy="12" r="9"/></svg>
+        <span>大纲 · 写作</span>
+        <em class="nav-badge" data-badge="outline"></em>
+      </button>
+      <button class="nav-item" data-page="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>设置</span>
+        <em class="nav-badge" data-badge="settings"></em>
+      </button>
+    </nav>
+
+    <div class="side-foot">
+      <div class="mini-stat">
+        <div class="mini-row"><span>章节</span><b id="statChapters">—</b></div>
+        <div class="mini-row"><span>总字数</span><b id="statWords">—</b></div>
+      </div>
+      <button class="ghost-btn full" id="btnTheme" title="切换深浅色">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <span id="themeLabel">深浅色</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ===== 内容区 ===== -->
+  <main class="content" id="content">
+
+    <!-- ---------- 创意 ---------- -->
+    <section class="page is-active" data-page="idea">
+      <header class="page-head">
+        <h1>创意</h1>
+        <p>写下一个念头，让 AI 帮你把它发散成可写的方向，再收敛成方案。</p>
+      </header>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h2>你的想法</h2>
+            <span class="hint" id="ideaHint">越具体，方向越准</span>
+          </div>
+          <textarea id="ideaText" class="ta ta-lg" rows="10"
+            placeholder="例如：一个能听见他人记忆的少女，在一座不断重启的城市里寻找自己丢失的那一天…"></textarea>
+          <div class="row-between">
+            <div class="inline-fields">
+              <label class="field sm"><span>方向数</span><input type="number" id="dirCount" value="5" min="1" max="20"></label>
+              <label class="field sm"><span>迭代轮次</span><input type="number" id="dirIter" value="2" min="1" max="6"></label>
+            </div>
+            <button class="btn primary" id="btnGenDirs">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
+              生成创作方向
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>创作方向</h2>
+            <span class="hint" id="dirCountHint">尚未生成</span>
+          </div>
+          <div class="list" id="dirList">
+            <div class="empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M12 3v18M3 12h18"/></svg>
+              <p>还没有方向</p>
+              <span>先在左侧写下想法，然后点「生成创作方向」</span>
+            </div>
+          </div>
+          <div class="card-foot">
+            <button class="btn ghost" id="btnSelDir" disabled>选定此方向</button>
+            <div class="inline-fields">
+              <label class="field sm"><span>方案数</span><input type="number" id="planCount" value="3" min="1" max="10"></label>
+              <button class="btn primary" id="btnGenPlans" disabled>生成小说方案</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 方案 ---------- -->
+    <section class="page" data-page="plan">
+      <header class="page-head">
+        <h1>方案</h1>
+        <p>从选定的方向生成若干套「题目 + 简介 + 大纲」，挑一套往下走。</p>
+      </header>
+
+      <div class="grid-split">
+        <div class="card">
+          <div class="card-head"><h2>方案列表</h2><span class="hint" id="planCountHint">0 套</span></div>
+          <div class="list" id="planList">
+            <div class="empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h6"/></svg>
+              <p>还没有方案</p><span>在「创意」页选定方向后生成</span>
+            </div>
+          </div>
+          <div class="card-foot">
+            <button class="btn ghost" id="btnSelPlan" disabled>选定此方案</button>
+            <div class="inline-fields">
+              <label class="field sm"><span>章节数</span><input type="number" id="chCount" value="20" min="3" max="50"></label>
+              <button class="btn primary" id="btnExpandOutline" disabled>细化大纲</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>方案详情</h2>
+            <span class="hint">可直接编辑，失焦即保存</span>
+          </div>
+          <div class="form">
+            <label class="field"><span>题目</span><input type="text" id="planTitle" placeholder="（未选择方案）"></label>
+            <label class="field"><span>简介</span><textarea id="planSynopsis" class="ta" rows="4"></textarea></label>
+            <label class="field grow"><span>大纲</span><textarea id="planOutline" class="ta" rows="12"></textarea></label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 大纲 · 写作 ---------- -->
+    <section class="page" data-page="outline">
+      <header class="page-head">
+        <h1>大纲 · 写作</h1>
+        <p>逐章扩写正文。选中的章节可在右侧编辑，AI 生成结果会自动回填。</p>
+      </header>
+
+      <div class="card toolbar">
+        <div class="inline-fields">
+          <label class="field sm"><span>目标字数/章</span><input type="number" id="words" value="3000" min="200" max="20000"></label>
+          <button class="btn ghost" id="btnExpandCh" disabled>扩写本章</button>
+          <button class="btn ghost" id="btnExpandAll">扩写全部</button>
+          <button class="btn primary" id="btnStepWrite">逐章生成</button>
+          <button class="btn accent" id="btnAutoWrite">全自动写作</button>
+        </div>
+        <div class="inline-fields">
+          <button class="btn ghost" id="btnCheck">一致性检查</button>
+          <button class="btn ghost" id="btnFinale">伏笔回收校验</button>
+          <button class="btn ghost" id="btnExport">导出 RTF / TXT</button>
+          <button class="btn ghost" id="btnMore">更多功能</button>
+        </div>
+      </div>
+
+      <div class="grid-outline">
+        <div class="card">
+          <div class="card-head"><h2>章节目录</h2><span class="hint" id="chHint">0 章</span></div>
+          <div class="list list-compact" id="chList">
+            <div class="empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+              <p>还没有章节</p><span>到「方案」页细化大纲</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>章节内容</h2>
+            <span class="hint" id="chWc">—</span>
+          </div>
+          <div class="form">
+            <label class="field"><span>标题</span><input type="text" id="chTitle" placeholder="（未选择章节）"></label>
+            <label class="field"><span>概要</span><textarea id="chSummary" class="ta" rows="3"></textarea></label>
+            <label class="field grow"><span>正文</span><textarea id="chContent" class="ta ta-mono" rows="16" spellcheck="false"></textarea></label>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-head">
+              <h2>世界观</h2>
+              <button class="mini-btn" id="btnSumWorld" title="AI 通读全文后总结">总结</button>
+            </div>
+            <div class="form">
+              <label class="field sm"><span>世界类型</span><input type="text" id="wType"></label>
+              <label class="field"><span>背景设定</span><textarea id="wSetting" class="ta" rows="4"></textarea></label>
+              <label class="field"><span>力量体系</span><textarea id="wPower" class="ta" rows="3"></textarea></label>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>人物</h2>
+              <button class="mini-btn" id="btnGenChars" title="AI 根据正文生成人物草稿">生成</button>
+            </div>
+            <div class="list list-tight" id="charList">
+              <div class="empty small"><p>暂无人物</p></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2>伏笔登记</h2>
+              <span class="hint" id="fsHint">0 条</span>
+            </div>
+            <div class="list list-tight" id="fsList">
+              <div class="empty small"><p>写完章节后自动登记</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 设置 ---------- -->
+    <section class="page" data-page="settings">
+      <header class="page-head">
+        <h1>设置</h1>
+        <p>API 配置与项目管理。Key 只保存在本机 config.json。</p>
+      </header>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h2>AI API</h2><span class="hint" id="cfgPath"></span></div>
+          <div class="form">
+            <div class="field">
+              <span>服务商预设</span>
+              <div class="preset-row" id="presetRow"></div>
+              <p class="preset-hint" id="presetHint">选一家可自动填入端点与常用模型。Key 需自行填写，只保存在本机 config.json。</p>
+            </div>
+            <label class="field"><span>API 端点</span><input type="text" id="apiUrl" placeholder="https://api.deepseek.com"></label>
+            <label class="field"><span>API Key</span>
+              <div class="with-suffix">
+                <input type="password" id="apiKey" placeholder="sk-...">
+                <button class="mini-btn" id="btnEye" type="button">显示</button>
+              </div>
+            </label>
+            <label class="field"><span>模型</span>
+              <div class="with-suffix">
+                <input type="text" id="model" list="modelList" placeholder="gpt-4o-mini">
+                <button class="mini-btn" id="btnFetchModels" type="button">获取</button>
+              </div>
+              <datalist id="modelList"></datalist>
+            </label>
+            <div class="inline-fields">
+              <label class="field sm"><span>温度</span><input type="number" id="temperature" step="0.1" min="0" max="2"></label>
+              <label class="field sm"><span>最大 Tokens</span><input type="number" id="maxTokens" min="256" max="200000"></label>
+              <label class="field sm"><span>超时(秒)</span><input type="number" id="timeout" min="10" max="3600"></label>
+            </div>
+            <div class="inline-fields">
+              <label class="field sm"><span>限流间隔(ms)</span><input type="number" id="rateLimitMs" min="0" max="600000" step="500"></label>
+              <label class="field sm"><span>失败重试(次)</span><input type="number" id="maxRetries" min="0" max="10"></label>
+            </div>
+            <p class="hint" style="margin:2px 0 0">用免费限流模型（如 OpenRouter 的 :free 系列）时，把限流间隔设为 60000 以上、失败重试 3~5 次，可避免 429 中断全自动写作。</p>
+            <label class="switch">
+              <input type="checkbox" id="consistency">
+              <span class="track"><i></i></span>
+              <span class="switch-text">一致性检查
+                <em>自动写作阶段 5 会对每章调用一次 AI，token 消耗显著增加</em>
+              </span>
+            </label>
+            <div class="row-right">
+              <button class="btn primary" id="btnSaveCfg">保存设置</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><h2>项目</h2><span class="hint" id="projStage"></span></div>
+            <div class="form">
+              <label class="field"><span>项目名称</span><input type="text" id="projName" placeholder="未命名"></label>
+              <div class="inline-fields wrap">
+                <button class="btn primary" id="btnNewProj">新建项目</button>
+                <button class="btn ghost" id="btnSaveProj">保存项目</button>
+                <button class="btn ghost" id="btnLoadFile">从文件加载</button>
+                <button class="btn ghost" id="btnPickOut">选择输出目录</button>
+              </div>
+              <div class="paths">
+                <div class="path-row"><span>存储目录</span><code id="projDir">—</code></div>
+                <div class="path-row"><span>输出目录</span><code id="outDir">—</code></div>
+                <div class="path-row"><span>最近导出</span>
+                  <a href="#" id="linkDoc" class="link">RTF</a>
+                  <a href="#" id="linkTxt" class="link">TXT</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h2>已保存的项目</h2><span class="hint" id="projListHint">—</span></div>
+            <div class="list list-tight" id="projList">
+              <div class="empty small"><p>暂无项目</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ===== 状态栏 ===== -->
+<footer class="statusbar">
+  <div class="status-left">
+    <span class="dot" id="busyDot"></span>
+    <span id="statusText">就绪</span>
+  </div>
+  <div class="status-mid">
+    <div class="progress" id="progressWrap"><i id="progressBar"></i></div>
+    <span id="progressText"></span>
+  </div>
+  <div class="status-right">
+    <span class="credit">© novelnow · 作者：<span id="authorSlot">____</span></span>
+    <button class="mini-btn danger" id="btnCancel" disabled>取消任务</button>
+  </div>
+</footer>
+
+<!-- ===== 询问弹层（逐章生成） ===== -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3 id="mTitle">需要确认</h3>
+    <p id="mText"></p>
+    <div class="modal-actions" id="mActions"></div>
+  </div>
+</div>
+
+<!-- ===== 更多功能菜单 ===== -->
+<div class="menu" id="moreMenu">
+  <button data-act="genChars">AI 生成人物草稿</button>
+  <button data-act="sumWorld">AI 总结世界观</button>
+  <button data-act="importTxt">导入 TXT 并分析</button>
+  <button data-act="check">一致性检查（选中章节）</button>
+  <button data-act="finale">伏笔回收校验（全书）</button>
+  <div class="menu-sep"></div>
+  <button data-act="pickOut">选择输出目录…</button>
+  <button data-act="openOut">打开输出目录</button>
+  <button data-act="reveal">在资源管理器中显示项目</button>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
