@@ -37,7 +37,10 @@ if not exist obj mkdir obj
 if not exist bin mkdir bin
 if not exist bin\ui mkdir bin\ui
 
-set SRCS=src\host.c src\cJSON.c src\utils.c src\ai_api.c src\config.c src\project.c src\engine.c
+rem stale .obj from deleted sources would be linked in by obj\*.obj - clean first
+if exist obj\*.obj del /q obj\*.obj
+rem wildcard: new source files are picked up automatically, no list to maintain
+set SRCS=src\*.c
 
 echo [1/4] compiling sources...
 for %%f in (%SRCS%) do (
@@ -66,7 +69,7 @@ if not exist %LIBDIR%\WebView2Loader.lib (
 )
 
 echo [3/4] linking...
-link /nologo /SUBSYSTEM:WINDOWS obj\host.obj obj\cJSON.obj obj\utils.obj obj\ai_api.obj obj\config.obj obj\project.obj obj\engine.obj obj\novelnow_res.res ^
+link /nologo /SUBSYSTEM:WINDOWS obj\*.obj obj\novelnow_res.res ^
     /LIBPATH:%LIBDIR% WebView2Loader.lib ^
     wininet.lib ole32.lib oleaut32.lib uuid.lib shell32.lib comdlg32.lib gdi32.lib user32.lib advapi32.lib ^
     /OUT:bin\novelnow.exe

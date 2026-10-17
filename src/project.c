@@ -13,21 +13,26 @@ static char* safe_dup(const char *s)
 
 /* ============== 项目创建/销毁 ============== */
 
+static char* make_safe_id(void);   /* 定义在 project_save 前，创建时就要用 */
+
 novel_project_t* project_create(const char *name, const char *seed_idea)
 {
     novel_project_t *proj = (novel_project_t*)calloc(1, sizeof(novel_project_t));
     if (!proj) return NULL;
     
     char *ts = get_timestamp_str();
-    proj->id = str_dup(ts);
+    /* id 必须过 make_safe_id（时间戳+序号）：裸时间戳同一秒建两个项目
+       id 相同 → 同目录互相覆盖，用户项目被抹掉 */
+    proj->id = make_safe_id();
     proj->name = safe_dup(name);
-    proj->created_at = str_dup(ts);
-    proj->updated_at = str_dup(ts);
+    proj->created_at = str_dup(ts ? ts : "");
+    proj->updated_at = str_dup(ts ? ts : "");
     proj->seed_idea = safe_dup(seed_idea);
     proj->current_stage = str_dup("idea");
     proj->iteration_round = 0;
     proj->total_words = 0;
     proj->finale_report = str_dup("");
+    proj->gal_json = str_dup("{}");
     free(ts);
     
     /* 初始化世界观 */
@@ -53,6 +58,7 @@ void project_destroy(novel_project_t *proj)
     if (proj->seed_idea) free(proj->seed_idea);
     if (proj->current_stage) free(proj->current_stage);
     if (proj->finale_report) free(proj->finale_report);
+    if (proj->gal_json) free(proj->gal_json);
     
     /* 方向 */
     for (int i = 0; i < proj->direction_count; i++) {
@@ -451,6 +457,30 @@ static void foreshadow_clear(foreshadow_t *f)
     f->description = NULL;
 }
 
+/* 原始追加（不去重）：返回新条目指针，失败返回 NULL。
+   load 与 add 共用，保证「加完的那条」身份明确——绝不写 foreshadows[count-1] 猜身份 */
+static foreshadow_t *foreshadow_push(novel_project_t *proj, const char *title,
+                                     const char *description, int planted_chapter)
+{
+    if (!proj) return NULL;
+    if (proj->foreshadow_count >= proj->foreshadow_capacity) {
+        int cap = proj->foreshadow_capacity ? proj->foreshadow_capacity * 2 : 16;
+        foreshadow_t *n = (foreshadow_t*)realloc(proj->foreshadows,
+                                                 cap * sizeof(foreshadow_t));
+        if (!n) return NULL;
+        proj->foreshadows = n;
+        proj->foreshadow_capacity = cap;
+    }
+
+    foreshadow_t *f = &proj->foreshadows[proj->foreshadow_count++];
+    memset(f, 0, sizeof(*f));   /* 新区清零：加字段后不读未初始化内存 */
+    f->title = str_dup(title ? title : "");
+    f->description = str_dup(description ? description : "");
+    f->planted_chapter = planted_chapter;
+    f->resolved_chapter = -1;
+    return f;
+}
+
 void project_add_foreshadow(novel_project_t *proj, const char *title,
                             const char *description, int planted_chapter)
 {
@@ -463,20 +493,7 @@ void project_add_foreshadow(novel_project_t *proj, const char *title,
             strcmp(f->title, title) == 0) return;
     }
 
-    if (proj->foreshadow_count >= proj->foreshadow_capacity) {
-        int cap = proj->foreshadow_capacity ? proj->foreshadow_capacity * 2 : 16;
-        foreshadow_t *n = (foreshadow_t*)realloc(proj->foreshadows,
-                                                 cap * sizeof(foreshadow_t));
-        if (!n) return;
-        proj->foreshadows = n;
-        proj->foreshadow_capacity = cap;
-    }
-
-    foreshadow_t *f = &proj->foreshadows[proj->foreshadow_count++];
-    f->title = str_dup(title ? title : "");
-    f->description = str_dup(description ? description : "");
-    f->planted_chapter = planted_chapter;
-    f->resolved_chapter = -1;
+    foreshadow_push(proj, title, description, planted_chapter);
 }
 
 int project_resolve_foreshadow(novel_project_t *proj, const char *title, int chapter)
@@ -674,6 +691,16 @@ static int is_safe_id(const char *id)
         if (!ok) return 0;
         if (++n > 64) return 0;
     }
+    /* Windows 保留设备名：con/prn/aux/nul/com1-9/lpt1-9 做目录名会打到设备上 */
+    {
+        static const char *reserved[] = {
+            "con","prn","aux","nul",
+            "com1","com2","com3","com4","com5","com6","com7","com8","com9",
+            "lpt1","lpt2","lpt3","lpt4","lpt5","lpt6","lpt7","lpt8","lpt9", NULL };
+        for (int i = 0; reserved[i]; i++) {
+            if (_stricmp(id, reserved[i]) == 0) return 0;
+        }
+    }
     return 1;
 }
 
@@ -717,6 +744,17 @@ int project_save(novel_project_t *proj, const char *dir)
     add_string_to_json(root, "seed_idea", proj->seed_idea);
     add_string_to_json(root, "current_stage", proj->current_stage);
     add_string_to_json(root, "finale_report", proj->finale_report);
+    {
+        /* galgame 分支剧情状态：整块 JSON 文本，内嵌为对象。
+           解析失败绝不能静默清空（那等于销毁用户剧情存档）——
+           原文以 "gal_raw" 字符串键保底落盘，load 时优先还原 */
+        cJSON *gal = cJSON_Parse(proj->gal_json ? proj->gal_json : "{}");
+        if (gal) {
+            cJSON_AddItemToObject(root, "gal", gal);
+        } else {
+            cJSON_AddStringToObject(root, "gal_raw", proj->gal_json ? proj->gal_json : "");
+        }
+    }
     cJSON_AddNumberToObject(root, "total_words", proj->total_words);
     cJSON_AddNumberToObject(root, "iteration_round", proj->iteration_round);
     
@@ -854,6 +892,17 @@ novel_project_t* project_load(const char *path)
     proj->seed_idea = safe_dup(get_json_string(root, "seed_idea"));
     proj->current_stage = safe_dup(get_json_string(root, "current_stage"));
     proj->finale_report = safe_dup(get_json_string(root, "finale_report"));
+    {
+        /* galgame 分支剧情状态（"gal" 对象 <-> gal_json 文本）；
+           "gal_raw" 是保存时解析失败的保底原文，优先级高于空对象 */
+        cJSON *gal = cJSON_GetObjectItem(root, "gal");
+        cJSON *gal_raw = cJSON_GetObjectItem(root, "gal_raw");
+        char *gs = NULL;
+        if (gal) gs = cJSON_PrintUnformatted(gal);
+        else if (gal_raw && cJSON_IsString(gal_raw) && gal_raw->valuestring && *gal_raw->valuestring)
+            gs = str_dup(gal_raw->valuestring);
+        proj->gal_json = gs ? gs : str_dup("{}");
+    }
     
     cJSON *item;
     if ((item = cJSON_GetObjectItem(root, "total_words")) && cJSON_IsNumber(item))
@@ -985,11 +1034,10 @@ novel_project_t* project_load(const char *path)
                 planted = item->valueint;
             if ((item = cJSON_GetObjectItem(c, "resolved_chapter")) && cJSON_IsNumber(item))
                 resolved = item->valueint;
-            project_add_foreshadow(proj, ft, get_json_string(c, "description"), planted);
-            if (resolved >= 0) {
-                /* 加载时按记录原样恢复回收状态（add 后必然还是首条同名未回收） */
-                proj->foreshadows[proj->foreshadow_count - 1].resolved_chapter = resolved;
-            }
+            /* project_add_foreshadow 有去重会吞条目；load 必须原样恢复（含同名/空标题），
+            所以走 foreshadow_push，并把回收状态写到「刚加的那条」身上 */
+            foreshadow_t *f = foreshadow_push(proj, ft, get_json_string(c, "description"), planted);
+            if (f && resolved >= 0) f->resolved_chapter = resolved;
         }
     }
     

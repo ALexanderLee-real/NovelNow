@@ -1,4 +1,4 @@
-﻿#ifndef NOVEL_AI_UTILS_H
+#ifndef NOVEL_AI_UTILS_H
 #define NOVEL_AI_UTILS_H
 
 #ifdef __cplusplus
@@ -21,6 +21,12 @@ void strbuf_append_len(strbuf_t *buf, const char *str, size_t len);
 void strbuf_append_char(strbuf_t *buf, char c);
 void strbuf_clear(strbuf_t *buf);
 char* strbuf_dup(strbuf_t *buf);
+/* NULL 安全取文本：strbuf_create 失败（OOM）返回 NULL 时，直接解 buf->data 会崩。
+   提示词场景下返回 "" 比崩掉好——AI 调用会因空提示词失败并走正常错误通道 */
+static inline const char* strbuf_text(const strbuf_t *buf)
+{
+    return (buf && buf->data) ? buf->data : "";
+}
 
 /* 文件操作 */
 char* read_file(const char *path);

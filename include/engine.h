@@ -90,8 +90,9 @@ int engine_expand_chapter(engine_state_t *engine, novel_project_t *proj,
 
 /*
    批量扩写所有章节
+   force=0：已写完（字数达标）的章节跳过；force=1：无条件覆盖重写
 */
-int engine_expand_all_chapters(engine_state_t *engine, novel_project_t *proj, int target_words_per_chapter);
+int engine_expand_all_chapters(engine_state_t *engine, novel_project_t *proj, int target_words_per_chapter, int force);
 
 /* ============== 阶段5：一致性检查 ============== */
 

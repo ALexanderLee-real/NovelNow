@@ -1,16 +1,9 @@
-#include "ai_api.h"
-#include "utils.h"
+﻿/* ai_api.c - public API: config/response/retry/abort/chat/models (2026-10-18 split from legacy ai_api.c, zero behavior change) */
+#include "ai_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <wininet.h>
-#pragma comment(lib, "wininet.lib")
-#else
-#error "This version only supports Windows"
-#endif
 
 /* ============== 限流与重试（免费/限流额度模型友好） ============== */
 
@@ -64,10 +57,11 @@ static int retryable_error(const char *err)
 
 /* ============== 请求中止（点取消立即掐断在途请求） ============== */
 
-static INIT_ONCE g_abort_once = INIT_ONCE_STATIC_INIT;
-static CRITICAL_SECTION g_abort_cs;
-static volatile LONG g_abort_flag = 0;
-static HINTERNET g_active_req = NULL;   /* 当前在途请求的 WinInet 句柄 */
+INIT_ONCE g_abort_once = INIT_ONCE_STATIC_INIT;
+CRITICAL_SECTION g_abort_cs;
+volatile LONG g_abort_flag = 0;
+HINTERNET g_active_req = NULL;   /* 当前在途请求的 WinInet 句柄 */
+HINTERNET g_aborted_req = NULL;  /* 被 abort 线程代关的句柄：请求线程不得再关（防双重关闭/句柄复用误杀） */
 
 static BOOL CALLBACK abort_init_fn(PINIT_ONCE once, PVOID param, PVOID *ctx)
 {
@@ -76,7 +70,7 @@ static BOOL CALLBACK abort_init_fn(PINIT_ONCE once, PVOID param, PVOID *ctx)
     return TRUE;
 }
 
-static void abort_lock(void)
+void abort_lock(void)
 {
     InitOnceExecuteOnce(&g_abort_once, abort_init_fn, NULL, NULL);
 }
@@ -89,13 +83,14 @@ void ai_abort_current(void)
        这是 WinInet 官方认可的中断方式 */
     EnterCriticalSection(&g_abort_cs);
     if (g_active_req) {
+        g_aborted_req = g_active_req;
         InternetCloseHandle(g_active_req);
         g_active_req = NULL;   /* 请求线程稍后清理时会再关一次，重复关闭安全 */
     }
     LeaveCriticalSection(&g_abort_cs);
 }
 
-static int ai_aborted(void)
+int ai_aborted(void)
 {
     return InterlockedCompareExchange(&g_abort_flag, 0, 0) != 0;
 }
@@ -105,9 +100,12 @@ void ai_abort_reset(void)
 {
     abort_lock();
     InterlockedExchange(&g_abort_flag, 0);
+    EnterCriticalSection(&g_abort_cs);
+    g_aborted_req = NULL;   /* 新任务开始，作废上一轮的代关记录（防句柄值复用误判） */
+    LeaveCriticalSection(&g_abort_cs);
 }
 
-static void abort_err(char **err_out)
+void abort_err(char **err_out)
 {
     if (err_out) {
         free(*err_out);
@@ -132,6 +130,12 @@ ai_config_t* ai_config_create(void)
     cfg->api_url = str_dup("https://api.deepseek.com");
     cfg->api_key = str_dup("");
     cfg->model = str_dup("deepseek-flash");
+    /* str_dup 失败（OOM）必须当场报：后面 cJSON_AddStringToObject 会对 NULL 字段
+       调 strlen，直接崩（P0-⑨） */
+    if (!cfg->api_url || !cfg->api_key || !cfg->model) {
+        ai_config_destroy(cfg);
+        return NULL;
+    }
     cfg->temperature = 0.7;
     /* 2048 会被思考型模型的推理阶段耗尽导致空正文；DEFAULT 是 deepseek 全系的安全输出上限 */
     cfg->max_tokens = AI_MAX_TOKENS_DEFAULT;
@@ -164,304 +168,6 @@ void ai_response_destroy(ai_response_t *resp)
     if (resp->content) free(resp->content);
     if (resp->error) free(resp->error);
     free(resp);
-}
-
-/* ============== URL 解析 ============== */
-
-typedef struct {
-    char scheme[16];
-    char host[256];
-    int port;
-    char path[1024];
-} url_parts_t;
-
-static int parse_url(const char *url, url_parts_t *parts)
-{
-    if (!url || !parts) return -1;
-    memset(parts, 0, sizeof(*parts));
-    
-    const char *p = url;
-    
-    /* scheme */
-    const char *scheme_end = strstr(p, "://");
-    if (scheme_end) {
-        size_t slen = scheme_end - p;
-        if (slen >= sizeof(parts->scheme)) return -1;
-        memcpy(parts->scheme, p, slen);
-        parts->scheme[slen] = '\0';
-        p = scheme_end + 3;
-    } else {
-        strcpy(parts->scheme, "https");
-    }
-    
-    /* host：端口冒号在路径之前时主机名必须止于冒号，
-       否则 host 会带上端口（如 "127.0.0.1:8765"），InternetConnectA
-       会拼出 "127.0.0.1:8765:8765" 并报 12005 无效 URL */
-    const char *path_start = strchr(p, '/');
-    const char *port_start = strchr(p, ':');
-    const char *host_end;
-    if (port_start && (!path_start || port_start < path_start)) {
-        host_end = port_start;
-    } else if (path_start) {
-        host_end = path_start;
-    } else {
-        host_end = p + strlen(p);
-    }
-    size_t hlen = host_end - p;
-    if (hlen >= sizeof(parts->host)) return -1;
-    memcpy(parts->host, p, hlen);
-    parts->host[hlen] = '\0';
-    
-    /* port */
-    if (port_start && (!path_start || port_start < path_start)) {
-        parts->port = atoi(port_start + 1);
-    } else {
-        if (strcmp(parts->scheme, "https") == 0) parts->port = 443;
-        else parts->port = 80;
-    }
-    
-    /* path */
-    if (path_start) {
-        strncpy(parts->path, path_start, sizeof(parts->path) - 1);
-        parts->path[sizeof(parts->path) - 1] = '\0';
-    } else {
-        strcpy(parts->path, "/");
-    }
-    
-    return 0;
-}
-
-/* ============== HTTP POST ============== */
-
-typedef struct {
-    char *data;
-    size_t length;
-    size_t capacity;
-} http_buffer_t;
-
-static void http_buf_init(http_buffer_t *buf)
-{
-    buf->capacity = 4096;
-    buf->data = (char*)malloc(buf->capacity);
-    buf->length = 0;
-    if (buf->data) buf->data[0] = '\0';
-}
-
-static void http_buf_append(http_buffer_t *buf, const char *data, size_t len)
-{
-    /* data 可能为 NULL（初始 malloc 失败）：此时必须先尝试分配，
-       否则 memcpy(NULL+len, ...) 直接崩溃 */
-    if (!buf->data || buf->length + len + 1 > buf->capacity) {
-        size_t cap = buf->capacity ? buf->capacity : 4096;
-        while (cap < buf->length + len + 1) cap *= 2;
-        char *new_data = (char*)realloc(buf->data, cap);
-        if (!new_data) return;
-        buf->data = new_data;
-        buf->capacity = cap;
-    }
-    memcpy(buf->data + buf->length, data, len);
-    buf->length += len;
-    buf->data[buf->length] = '\0';
-}
-
-static void http_buf_free(http_buffer_t *buf)
-{
-    if (buf->data) free(buf->data);
-    buf->data = NULL;
-    buf->length = 0;
-    buf->capacity = 0;
-}
-
-/* POST 与 GET 共用同一套连接/收发/错误处理流程，仅动词与请求体不同。
-   on_body 非空时（流式模式）：每读到一段响应体就回调一次，调用方在回调里
-   做增量处理；resp_buf 仍然照常累积，保证错误路径能拿到完整报文。 */
-static char* http_request_ex(const char *method, const char *url, const char *headers[],
-                             int header_count, const char *body, size_t body_len,
-                             int timeout_sec, char **err_out,
-                             void (*on_body)(const char *data, size_t len, void *ud), void *ud)
-{
-    url_parts_t parts;
-    if (parse_url(url, &parts) != 0) {
-        if (err_out) *err_out = str_dup("Failed to parse URL");
-        return NULL;
-    }
-
-    HINTERNET hInet = InternetOpenA("novelnow/1.0", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-    if (!hInet) {
-        if (err_out) *err_out = str_dup("Failed to initialize WinInet");
-        return NULL;
-    }
-
-    /* 使用配置里的超时（timeout 秒），不再写死 120 秒 */
-    DWORD timeout_ms;
-    if (timeout_sec < 5) timeout_sec = 5;
-    if (timeout_sec > 3600) timeout_sec = 3600;
-    timeout_ms = (DWORD)timeout_sec * 1000;
-    InternetSetOptionA(hInet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout_ms, sizeof(timeout_ms));
-    InternetSetOptionA(hInet, INTERNET_OPTION_SEND_TIMEOUT, &timeout_ms, sizeof(timeout_ms));
-    InternetSetOptionA(hInet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout_ms, sizeof(timeout_ms));
-
-    DWORD flags = (strcmp(parts.scheme, "https") == 0) ? INTERNET_FLAG_SECURE : 0;
-    HINTERNET hConnect = InternetConnectA(hInet, parts.host, (INTERNET_PORT)parts.port,
-                                          NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
-    if (!hConnect) {
-        if (err_out) *err_out = str_dup("Failed to connect to server");
-        InternetCloseHandle(hInet);
-        return NULL;
-    }
-
-    HINTERNET hReq = HttpOpenRequestA(hConnect, method, parts.path,
-                                      NULL, NULL, NULL, flags, 0);
-    if (!hReq) {
-        if (err_out) *err_out = str_dup("Failed to create request");
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInet);
-        return NULL;
-    }
-
-    /* Add headers */
-    for (int i = 0; i < header_count; i++) {
-        HttpAddRequestHeadersA(hReq, headers[i], -1, HTTP_ADDREQ_FLAG_ADD);
-    }
-
-    /* Send request（GET 时 body 为 NULL / 0） */
-    BOOL sent = HttpSendRequestA(hReq, NULL, 0, (LPVOID)body, (DWORD)body_len);
-    if (!sent) {
-        DWORD err = GetLastError();
-        InternetCloseHandle(hReq);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInet);
-        if (ai_aborted()) {
-            abort_err(err_out);
-            return NULL;
-        }
-        char err_buf[512];
-        snprintf(err_buf, sizeof(err_buf),
-                 "Request failed with error %lu (%s %s://%s:%d%s)",
-                 err, method, parts.scheme, parts.host, parts.port, parts.path);
-        if (err_out) *err_out = str_dup(err_buf);
-        return NULL;
-    }
-
-    /* 登记在途句柄：取消线程会关闭它来立即中断阻塞读 */
-    abort_lock();
-    EnterCriticalSection(&g_abort_cs);
-    g_active_req = hReq;
-    LeaveCriticalSection(&g_abort_cs);
-
-    /* Read response */
-    http_buffer_t resp_buf;
-    http_buf_init(&resp_buf);
-    char chunk[4096];
-    DWORD bytes_read;
-    BOOL read_ok = TRUE;
-    for (;;) {
-        if (ai_aborted()) {
-            read_ok = FALSE;
-            break;
-        }
-        if (!InternetReadFile(hReq, chunk, sizeof(chunk) - 1, &bytes_read)) {
-            read_ok = FALSE;   /* 必须与 bytes_read==0 区分：连接中断时返回
-                                  半截 JSON 会被当成成功响应 */
-            break;
-        }
-        if (bytes_read == 0) break;
-        http_buf_append(&resp_buf, chunk, bytes_read);
-        if (on_body) on_body(chunk, bytes_read, ud);
-    }
-    /* 注销在途句柄（真正的关闭统一放请求线程，重复关闭安全） */
-    EnterCriticalSection(&g_abort_cs);
-    g_active_req = NULL;
-    LeaveCriticalSection(&g_abort_cs);
-
-    if (ai_aborted()) {
-        http_buf_free(&resp_buf);
-        InternetCloseHandle(hReq);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInet);
-        abort_err(err_out);
-        return NULL;
-    }
-    if (!read_ok || !resp_buf.data) {
-        if (err_out) *err_out = str_dup(read_ok ? "响应读取内存不足"
-                                                : "Connection lost while reading response");
-        http_buf_free(&resp_buf);
-        InternetCloseHandle(hReq);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInet);
-        return NULL;
-    }
-
-    /* Check status code */
-    char status_code[32] = {0};
-    DWORD status_len = sizeof(status_code);
-    HttpQueryInfoA(hReq, HTTP_QUERY_STATUS_CODE, status_code, &status_len, NULL);
-    int code = atoi(status_code);
-    if (code < 200 || code >= 300) {
-        if (err_out) {
-            char *err_msg = (char*)malloc(512 + resp_buf.length);
-            if (err_msg) {
-                snprintf(err_msg, 512 + resp_buf.length, "HTTP %d: %.*s", code,
-                         (int)(resp_buf.length > 512 ? 512 : resp_buf.length),
-                         resp_buf.data ? resp_buf.data : "");
-                *err_out = err_msg;
-            }
-        }
-        http_buf_free(&resp_buf);
-        InternetCloseHandle(hReq);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInet);
-        return NULL;
-    }
-
-    InternetCloseHandle(hReq);
-    InternetCloseHandle(hConnect);
-    InternetCloseHandle(hInet);
-
-    char *result = resp_buf.data;
-    resp_buf.data = NULL;
-    http_buf_free(&resp_buf);
-    return result;
-}
-
-/* 非流式调用方（ai_chat / ai_list_models）的原接口保持不变 */
-static char* http_request(const char *method, const char *url, const char *headers[],
-                          int header_count, const char *body, size_t body_len,
-                          int timeout_sec, char **err_out)
-{
-    return http_request_ex(method, url, headers, header_count, body, body_len,
-                           timeout_sec, err_out, NULL, NULL);
-}
-
-/* ============== 聊天 API ============== */
-
-/* 用户可能只填 base_url（如 https://api.deepseek.com），也可能填完整端点。
-   这里统一推导出真正的 chat/completions 地址，避免请求打到站点根路径而返回 404。 */
-static char* resolve_chat_endpoint(const char *api_url)
-{
-    if (!api_url || !*api_url) return NULL;
-
-    /* 已经是完整端点 */
-    if (strstr(api_url, "/chat/completions")) return str_dup(api_url);
-
-    size_t len = strlen(api_url);
-    while (len > 0 && api_url[len - 1] == '/') len--;
-
-    const char *suffix;
-    if (len >= 3 && memcmp(api_url + len - 3, "/v1", 3) == 0) {
-        suffix = "/chat/completions";
-    } else if (strstr(api_url, "openai.com")) {
-        /* OpenAI 官方要求 /v1 前缀 */
-        suffix = "/v1/chat/completions";
-    } else {
-        suffix = "/chat/completions";
-    }
-
-    char *url = (char*)malloc(len + strlen(suffix) + 1);
-    if (!url) return NULL;
-    memcpy(url, api_url, len);
-    strcpy(url + len, suffix);
-    return url;
 }
 
 ai_response_t* ai_chat(ai_config_t *cfg, chat_message_t *messages, int msg_count)
@@ -517,7 +223,13 @@ ai_response_t* ai_chat(ai_config_t *cfg, chat_message_t *messages, int msg_count
     
     /* Prepare headers */
     char auth_header[4096];
-    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", cfg->api_key);
+    int ah_len = snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", cfg->api_key);
+    if (ah_len < 0 || (size_t)ah_len >= sizeof(auth_header)) {
+        /* 截断的鉴权头只会换来莫名其妙的 401，不如直接说清楚（P1-⑯） */
+        resp->error = str_dup("API Key 过长，无法构造鉴权头");
+        free(json_str);
+        return resp;
+    }
     const char *headers[] = {
         "Content-Type: application/json",
         auth_header
@@ -651,81 +363,6 @@ ai_response_t* ai_chat_single(ai_config_t *cfg, const char *system_prompt, const
     return ai_chat(cfg, msgs, count);
 }
 
-/* ============== 流式聊天（SSE） ============== */
-
-typedef struct {
-    http_buffer_t pend;     /* 未凑成完整行的残余字节 */
-    http_buffer_t content;  /* 累积的正文 */
-    char *error;            /* 流内 error 事件的消息 */
-    ai_stream_cb cb;
-    void *ud;
-    int done;
-} sse_ctx_t;
-
-static void sse_reset(sse_ctx_t *s)
-{
-    http_buf_free(&s->pend);
-    http_buf_free(&s->content);
-    if (s->error) { free(s->error); s->error = NULL; }
-    s->cb = NULL; s->ud = NULL; s->done = 0;
-}
-
-static void sse_on_chunk(const char *data, size_t len, void *ud)
-{
-    sse_ctx_t *s = (sse_ctx_t*)ud;
-    http_buf_append(&s->pend, data, len);
-    if (!s->pend.data) return;
-
-    char *p = s->pend.data;
-    for (;;) {
-        char *nl = strchr(p, '\n');
-        if (!nl) break;
-        *nl = '\0';
-        size_t llen = strlen(p);
-        if (llen && p[llen - 1] == '\r') p[llen - 1] = '\0';
-
-        if (strncmp(p, "data:", 5) == 0) {
-            const char *d = p + 5;
-            while (*d == ' ' || *d == '\t') d++;
-            if (strcmp(d, "[DONE]") == 0) {
-                s->done = 1;
-            } else {
-                cJSON *j = cJSON_Parse(d);
-                if (j) {
-                    cJSON *choices = cJSON_GetObjectItem(j, "choices");
-                    const char *piece = NULL;
-                    if (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
-                        cJSON *delta = cJSON_GetObjectItem(cJSON_GetArrayItem(choices, 0), "delta");
-                        cJSON *content = delta ? cJSON_GetObjectItem(delta, "content") : NULL;
-                        if (content && cJSON_IsString(content) && content->valuestring)
-                            piece = content->valuestring;
-                    }
-                    cJSON *err = cJSON_GetObjectItem(j, "error");
-                    if (err) {
-                        cJSON *msg = cJSON_GetObjectItem(err, "message");
-                        if (msg && cJSON_IsString(msg) && !s->error)
-                            s->error = str_dup(msg->valuestring);
-                    }
-                    if (piece && *piece) {
-                        http_buf_append(&s->content, piece, strlen(piece));
-                        if (s->cb) s->cb(piece, s->ud);
-                    }
-                    cJSON_Delete(j);
-                }
-                /* 解析失败的行静默忽略：keep-alive 注释行等非 data 行本就不该进来，
-                   data 行里偶发的非 JSON（个别网关的心跳）也不值得中断整章生成 */
-            }
-        }
-        p = nl + 1;
-    }
-
-    /* 把残余半行挪回缓冲区头部 */
-    size_t rest = strlen(p);
-    if (rest) memmove(s->pend.data, p, rest + 1);
-    s->pend.length = rest;
-    if (s->pend.data) s->pend.data[rest] = '\0';
-}
-
 ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int msg_count,
                               ai_stream_cb cb, void *user)
 {
@@ -771,7 +408,12 @@ ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int ms
     }
 
     char auth_header[4096];
-    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", cfg->api_key);
+    int ah_len = snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", cfg->api_key);
+    if (ah_len < 0 || (size_t)ah_len >= sizeof(auth_header)) {
+        resp->error = str_dup("API Key 过长，无法构造鉴权头");
+        free(json_str);
+        return resp;
+    }
     const char *headers[] = {
         "Content-Type: application/json",
         auth_header,
@@ -811,6 +453,10 @@ ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int ms
             }
         } else {
             free(response_body);
+            if (sse.content.oom) {
+                /* 中途 realloc 失败丢过 delta，正文已截断，不能当成功返回（P1-⑭） */
+                resp->error = str_dup("响应读取内存不足，正文被截断");
+            } else {
             const char *acc = sse.content.data ? sse.content.data : "";
             const char *p = acc;
             while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
@@ -822,6 +468,7 @@ ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int ms
             } else {
                 resp->error = str_dup("AI 返回了空正文（流式）。若使用推理模型，"
                                       "请调大\"最大输出Tokens\"后重试");
+            }
             }
         }
 
@@ -905,7 +552,11 @@ char** ai_list_models(ai_config_t *cfg, int *count)
     models_url = build_models_url(cfg->api_url);
     if (!models_url) return NULL;
 
-    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", cfg->api_key);
+    int ah_len = snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", cfg->api_key);
+    if (ah_len < 0 || (size_t)ah_len >= sizeof(auth_header)) {
+        free(models_url);
+        return NULL;   /* 截断的鉴权头只会换来莫名其妙的 401（P1-⑯） */
+    }
     headers[0] = auth_header;
 
     body = http_request("GET", models_url, headers, 1, NULL, 0, cfg->timeout, NULL);

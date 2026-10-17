@@ -123,6 +123,9 @@ typedef struct {
     char *current_stage;  /* 当前阶段: idea, direction, plan, outline, writing, review */
     char *finale_report;  /* 伏笔回收校验报告（全书） */
     
+    /* galgame 实时分支剧情状态（整块 JSON 文本：节点树/flag/选项历史） */
+    char *gal_json;
+    
 } novel_project_t;
 
 /* ============== 项目管理 ============== */

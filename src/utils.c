@@ -1,4 +1,4 @@
-﻿#include "utils.h"
+#include "utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,8 +42,14 @@ void strbuf_destroy(strbuf_t *buf)
 static int strbuf_ensure(strbuf_t *buf, size_t needed)
 {
     if (buf->length + needed + 1 <= buf->capacity) return 1;
+    /* 长度运算先做溢出防御：length+needed+1 回绕会让 ensure 误判"够用"直接越界写 */
+    if (needed > SIZE_MAX - buf->length - 1) return 0;
     size_t new_cap = buf->capacity * 2;
-    while (new_cap < buf->length + needed + 1) new_cap *= 2;
+    while (new_cap < buf->length + needed + 1) {
+        size_t doubled = new_cap * 2;
+        if (doubled <= new_cap) { new_cap = buf->length + needed + 1; break; }  /* 翻倍溢出钳制 */
+        new_cap = doubled;
+    }
     char *new_data = (char*)realloc(buf->data, new_cap);
     /* 扩容失败必须报告，否则调用方会按新长度写入过小的旧缓冲区，造成堆溢出 */
     if (!new_data) return 0;
@@ -123,8 +129,10 @@ int write_file(const char *path, const char *content)
     if (!f) return -1;
     size_t len = strlen(content);
     size_t written = fwrite(content, 1, len, f);
-    fclose(f);
-    return (written == len) ? 0 : -1;
+    int ok = (written == len);
+    if (ok && fflush(f) != 0) ok = 0;   /* 磁盘满只有 flush 才暴露 */
+    if (fclose(f) != 0) ok = 0;
+    return ok ? 0 : -1;
 }
 
 int write_file_atomic(const char *path, const char *content)
@@ -133,12 +141,20 @@ int write_file_atomic(const char *path, const char *content)
     size_t len = strlen(path);
     if (len + 24 >= 1024) return -1;
 
-    /* 临时名带上进程号：两个进程写同一目标时不会互踩同一个 .tmp */
+    /* 临时名带进程号 + 进程内自增序号：同进程的自动保存线程与 UI 保存
+       并发写同一目标时也各用各的 .tmp，不会交错写花内容（原子写保证不作废） */
+#ifdef _WIN32
+    static volatile LONG seq_counter = 0;
+    unsigned long seq = (unsigned long)InterlockedIncrement(&seq_counter);
+#else
+    static unsigned long seq_counter = 0;
+    unsigned long seq = ++seq_counter;
+#endif
     char tmp[1024];
 #ifdef _WIN32
-    snprintf(tmp, sizeof(tmp), "%s.%lu.tmp", path, (unsigned long)GetCurrentProcessId());
+    snprintf(tmp, sizeof(tmp), "%s.%lu.%lu.tmp", path, (unsigned long)GetCurrentProcessId(), seq);
 #else
-    snprintf(tmp, sizeof(tmp), "%s.%ld.tmp", path, (long)getpid());
+    snprintf(tmp, sizeof(tmp), "%s.%ld.%lu.tmp", path, (long)getpid(), seq);
 #endif
 
     FILE *f = fopen(tmp, "wb");
@@ -180,12 +196,12 @@ int ensure_dir(const char *path)
     for (size_t i = 1; i < len; i++) {
         if (tmp[i] == '\\' || tmp[i] == '/') {
             tmp[i] = '\0';
-            mkdir(tmp);
+            mkdir(tmp);   /* 中间层已存在无所谓，最后一层的结果才是成败 */
             tmp[i] = path[i];
         }
     }
-    mkdir(tmp);
-    return 0;
+    /* 必须检验最终 mkdir 的结果：失败当成功会让 config/project 的兜底检测全瞎 */
+    return (mkdir(tmp) == 0 || file_exists(tmp)) ? 0 : -1;
 }
 
 int file_exists(const char *path)
@@ -277,9 +293,17 @@ size_t utf8_char_count(const char *s)
 char* get_timestamp_str(void)
 {
     time_t t = time(NULL);
-    struct tm *tm_info = localtime(&t);
+    struct tm tm_buf;
+    struct tm *tm_info;
     char *buf = (char*)malloc(64);
     if (!buf) return NULL;
+#ifdef _WIN32
+    tm_info = (localtime_s(&tm_buf, &t) == 0) ? &tm_buf : NULL;
+#else
+    tm_info = localtime(&t);
+#endif
+    /* localtime 偶发返回 NULL（时钟异常），strftime 的 tm 参数不能为 NULL */
+    if (!tm_info) { free(buf); return NULL; }
     strftime(buf, 64, "%Y%m%d_%H%M%S", tm_info);
     return buf;
 }
@@ -310,8 +334,9 @@ char* get_exe_dir(void)
     if (!buf) return NULL;
     DWORD len = GetModuleFileNameA(NULL, buf, 1024);
     if (len == 0) { free(buf); return NULL; }
-    /* 缓冲区不足时返回值等于 nSize，此时没有写入终止符，必须夹紧索引 */
-    if (len >= 1024) len = 1023;
+    /* 缓冲区不足时返回值等于 nSize 且内容被截断——算出的目录是错的，
+       静默返回错误目录比报错更危险，直接判失败 */
+    if (len >= 1024) { free(buf); return NULL; }
     buf[len] = '\0';
     char *last_slash = strrchr(buf, '\\');
     if (last_slash) *last_slash = '\0';

@@ -1,67 +1,21 @@
-#include "engine.h"
-#include "utils.h"
+﻿/* engine_flow.c - engine flow/API implementation, split from engine.c (2026-10-18, zero behavior change) */
+#include "engine_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <stddef.h>
 
-/* '：' '、' '第' '章' '节' 都是多字节字符，写成单引号字符常量后无法与任何 char 相等，
-   这里统一按 UTF-8 字节序列比较 */
-#define U8_EQ(p, lit) (strncmp((p), (lit), sizeof(lit) - 1) == 0)
-
-/* strstr 命中中文关键字后跳过关键字本体：必须按 strlen 跳。
-   中文每字 3 字节，写死 +2 会把第一个字切成半个，产生 U+FFFD 乱码 */
-static const char* u8_after(const char *hit, const char *kw)
-{
-    return hit + strlen(kw);
-}
-
-/* 定义在文件后部，engine_expand_outline 也要用，先声明 */
-static int parse_characters_from(const char *content, novel_project_t *proj);
-
-struct engine_internal {
-    app_config_t *config;
-    engine_state_t state;
-    volatile int cancel;   /* 用户请求取消：引擎循环在检查点轮询 */
-};
-
-typedef struct engine_internal engine_t;
-
-static engine_t* get_engine(engine_state_t *state) {
+engine_t* get_engine(engine_state_t *state) {
     return (engine_t*)((char*)state - offsetof(engine_t, state));
 }
 
-static int is_cancelled(engine_state_t *state)
+int is_cancelled(engine_state_t *state)
 {
     return state ? get_engine(state)->cancel : 0;
 }
-
-/* 检查点宏：用于引擎各循环的边界，收到取消请求时立即退出并报告 */
-#define CANCEL_CHECK(state) \
-    do { \
-        if (is_cancelled((state))) { \
-            set_error((state), "任务已被用户取消"); \
-            (state)->is_running = 0; \
-            return ENGINE_CANCELLED; \
-        } \
-    } while (0)
-
-/* 带清理的检查点：用于"已经分配了临时对象"之后的取消点，
-   否则用户每点一次取消就泄漏一份 strbuf / 字符串 */
-#define CANCEL_CHECK_CLEAN(state, cleanup_expr) \
-    do { \
-        if (is_cancelled((state))) { \
-            cleanup_expr; \
-            set_error((state), "任务已被用户取消"); \
-            (state)->is_running = 0; \
-            return ENGINE_CANCELLED; \
-        } \
-    } while (0)
-
 /* ============== 辅助函数 ============== */
 
-static void report_progress(engine_state_t *state, const char *stage,
+void report_progress(engine_state_t *state, const char *stage,
                             int current, int total, const char *message)
 {
     if (!state) return;
@@ -74,7 +28,7 @@ static void report_progress(engine_state_t *state, const char *stage,
     }
 }
 
-static void set_error(engine_state_t *state, const char *error)
+void set_error(engine_state_t *state, const char *error)
 {
     if (!state || !error) return;
     strncpy(state->last_error, error, sizeof(state->last_error) - 1);
@@ -129,7 +83,7 @@ static void text_delta_trampoline(const char *delta, void *ud)
 }
 
 /* 注册了通用流式回调就走 SSE（全文仍会返回在 resp->content），否则保持原样 */
-static ai_response_t* engine_ai_call(engine_state_t *state, ai_config_t *ai,
+ai_response_t* engine_ai_call(engine_state_t *state, ai_config_t *ai,
                                      const char *system_prompt, const char *user_prompt)
 {
     if (state && state->text_delta_cb)
@@ -152,91 +106,6 @@ void engine_clear_cancel(engine_state_t *state)
     if (!state) return;
     get_engine(state)->cancel = 0;
     ai_abort_reset();
-}
-
-/* ============== 解析 AI 返回的列表 ============== */
-
-/* 简单解析：从 AI 回复中提取编号列表项（如 "1. 标题 - 描述" 格式） */
-static int parse_numbered_list(const char *text, char **titles, char **descriptions, int max_items)
-{
-    if (!text || !titles || !descriptions) return 0;
-    
-    int count = 0;
-    const char *p = text;
-    
-    while (*p && count < max_items) {
-        /* 查找 "数字." 或 "数字、" 开头的行 */
-        const char *num_start = NULL;
-        while (*p) {
-            if (isdigit((unsigned char)*p) && (p == text || *(p-1) == '\n' || *(p-1) == '\r')) {
-                num_start = p;
-                break;
-            }
-            p++;
-        }
-        if (!num_start) break;
-        
-        /* 跳过数字和分隔符 */
-        p = num_start;
-        while (*p && isdigit((unsigned char)*p)) p++;
-        if (*p == '.') p++;
-        else if (U8_EQ(p, "、")) p += 3;
-        while (*p == ' ' || *p == '\t') p++;
-        
-        /* 提取标题（到换行、冒号或破折号之前） */
-        const char *title_start = p;
-        const char *desc_start = NULL;
-        while (*p && *p != '\n' && *p != '\r') {
-            if (*p == '-' && *(p+1) == '-') { p += 2; }
-            else if (*p == ':') { p++; }
-            else if (U8_EQ(p, "：")) { p += 3; }
-            else { p++; continue; }
-            while (*p == ' ' || *p == '\t') p++;
-            desc_start = p;
-            break;
-        }
-        
-        /* 提取标题 */
-        size_t title_len = (desc_start ? (size_t)(desc_start - title_start) : (size_t)(p - title_start));
-        /* 去掉尾部空格和破折号 */
-        while (title_len > 0 && (title_start[title_len-1] == ' ' || 
-               title_start[title_len-1] == '\t' || title_start[title_len-1] == '-')) {
-            title_len--;
-        }
-        /* 超长按 UTF-8 边界截断，而不是整条丢弃（丢弃会静默丢失内容） */
-        if (title_len > 255) title_len = utf8_safe_len(title_start, 255);
-        if (title_len > 0) {
-            char *title = (char*)malloc(title_len + 1);
-            if (title) {
-                memcpy(title, title_start, title_len);
-                title[title_len] = '\0';
-            }
-            titles[count] = title ? title : str_dup("未命名");
-        } else {
-            titles[count] = str_dup("未命名");
-        }
-        
-        /* 提取描述 */
-        const char *desc_end = p;
-        while (*desc_end && *desc_end != '\n' && *desc_end != '\r') desc_end++;
-        size_t desc_len = desc_start ? (size_t)(desc_end - desc_start) : 0;
-        if (desc_start && desc_len > 0) {
-            if (desc_len > 2047) desc_len = utf8_safe_len(desc_start, 2047);
-            char *desc = (char*)malloc(desc_len + 1);
-            if (desc) {
-                memcpy(desc, desc_start, desc_len);
-                desc[desc_len] = '\0';
-            }
-            descriptions[count] = desc ? desc : str_dup("");
-        } else {
-            descriptions[count] = str_dup("");
-        }
-        
-        count++;
-        if (*p == '\n') p++;
-    }
-    
-    return count;
 }
 
 /* ============== 阶段1：创意发散 ============== */
@@ -281,7 +150,7 @@ int engine_generate_directions(engine_state_t *state, novel_project_t *proj,
         
         ai_response_t *resp = engine_ai_call(state, get_engine(state)->config->ai, 
                                               "你是一位富有创意的小说策划师，擅长从简单的想法中发散出多种独特的创作方向。",
-                                              prompt->data);
+                                              strbuf_text(prompt));
         strbuf_destroy(prompt);
         
         if (!resp || !resp->success) {
@@ -381,7 +250,7 @@ int engine_generate_plans(engine_state_t *state, novel_project_t *proj, int plan
     
     ai_response_t *resp = engine_ai_call(state, get_engine(state)->config->ai,
                                           "你是一位资深的小说策划编辑，擅长设计有吸引力的小说方案和完整大纲。",
-                                          prompt->data);
+                                          strbuf_text(prompt));
     strbuf_destroy(prompt);
     
     if (!resp || !resp->success) {
@@ -468,10 +337,13 @@ int engine_generate_plans(engine_state_t *state, novel_project_t *proj, int plan
             while (se > sp && (*(se-1) == ' ' || *(se-1) == '\n' || *(se-1) == '\r')) se--;
             size_t slen = (size_t)(se - sp);
             if (slen > 0) {
-                free(synopsis);
-                synopsis = (char*)malloc(slen + 1);
-                memcpy(synopsis, sp, slen);
-                synopsis[slen] = '\0';
+                char *tmp = (char*)malloc(slen + 1);
+                if (tmp) {   /* malloc 失败不能 memcpy(NULL) */
+                    free(synopsis);
+                    synopsis = tmp;
+                    memcpy(synopsis, sp, slen);
+                    synopsis[slen] = '\0';
+                }
             }
         }
         
@@ -487,10 +359,13 @@ int engine_generate_plans(engine_state_t *state, novel_project_t *proj, int plan
             while (oe > op && (*(oe-1) == ' ' || *(oe-1) == '\n' || *(oe-1) == '\r')) oe--;
             size_t olen = (size_t)(oe - op);
             if (olen > 0) {
-                free(outline);
-                outline = (char*)malloc(olen + 1);
-                memcpy(outline, op, olen);
-                outline[olen] = '\0';
+                char *tmp = (char*)malloc(olen + 1);
+                if (tmp) {
+                    free(outline);
+                    outline = tmp;
+                    memcpy(outline, op, olen);
+                    outline[olen] = '\0';
+                }
             }
         }
         
@@ -565,7 +440,7 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
     
     ai_response_t *resp = engine_ai_call(state, get_engine(state)->config->ai,
                                           "你是一位专业的小说结构设计师，擅长将故事大纲细化为节奏合理的章节安排。",
-                                          prompt->data);
+                                          strbuf_text(prompt));
     strbuf_destroy(prompt);
     
     if (!resp || !resp->success) {
@@ -582,6 +457,13 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
        写 *2 会让超出的全部被收下，造成章节数远超预期 */
     const char *p = resp->content;
     int count = 0;
+
+    /* 先解析进临时数组，全部解析成功后才替换旧章节：
+       以前在 AI 调用前就 project_clear_chapters，AI 失败/解析失败时
+       用户已有的章节正文会被白白清空（P0 数据丢失） */
+    char **tmp_titles = NULL;
+    char **tmp_summaries = NULL;
+    int tmp_count = 0;
 
     while (*p && count < chapter_count) {
         /* 匹配 "第X章" 或 "数字." 格式 */
@@ -673,7 +555,21 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
         }
         if (!summary) summary = str_dup("");
         
-        project_add_chapter(proj, title_buf, summary);
+        char *t_copy = str_dup(title_buf);
+        if (t_copy) {
+            char **nt = (char**)realloc(tmp_titles, sizeof(char*) * (size_t)(tmp_count + 1));
+            char **ns = (char**)realloc(tmp_summaries, sizeof(char*) * (size_t)(tmp_count + 1));
+            if (nt) tmp_titles = nt;
+            if (ns) tmp_summaries = ns;
+            if (nt && ns) {
+                tmp_titles[tmp_count] = t_copy;
+                tmp_summaries[tmp_count] = summary;   /* 所有权转入 */
+                tmp_count++;
+                summary = NULL;
+            } else {
+                free(t_copy);
+            }
+        }
         free(summary);
         count++;
         
@@ -681,16 +577,24 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
         if (*p == '\n') p++;
     }
     
-    /* 如果解析失败，创建空章节 */
-    if (count == 0) {
-        for (int i = 0; i < chapter_count; i++) {
-            char title[64];
-            sprintf(title, "第%d章", i + 1);
-            /* 不要把整段 AI 回复复制 N 份当概要：那会污染后续每一章的提示词 */
-            project_add_chapter(proj, title, "大纲解析失败，请重新细化大纲");
+    /* 提交：解析成功才替换旧章节；解析失败保留旧章节（旧数据不丢） */
+    if (tmp_count > 0) {
+        project_clear_chapters(proj);
+        for (int i = 0; i < tmp_count; i++) {
+            project_add_chapter(proj, tmp_titles[i], tmp_summaries[i]);
+            free(tmp_titles[i]);
+            free(tmp_summaries[i]);
         }
-        count = chapter_count;
+        count = tmp_count;
+    } else {
+        /* 解析失败：不要清空用户已有章节，只报错 */
+        ai_response_destroy(resp);
+        set_error(state, "大纲解析失败：AI 回复中没有找到章节列表，原章节已保留");
+        state->is_running = 0;
+        return -1;
     }
+    free(tmp_titles);
+    free(tmp_summaries);
     
     ai_response_destroy(resp);
     
@@ -709,7 +613,7 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
         
         ai_response_t *char_resp = engine_ai_call(state, get_engine(state)->config->ai,
             "你是一位人物设定专家，擅长塑造丰满立体的小说角色。",
-            char_prompt->data);
+            strbuf_text(char_prompt));
         strbuf_destroy(char_prompt);
         
         if (char_resp && char_resp->success && strstr(char_resp->content, "姓名")) {
@@ -724,89 +628,6 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
     report_progress(state, "大纲细化", 3, 3, "完成");
     state->is_running = 0;
     return count;
-}
-
-/* ============== 阶段4：章节扩写 ============== */
-
-/* 章节写完后的「记账」调用：让 AI 用极少的 token 顺带产出
-   ① 本章概要（存入 summary，供后续章节做前文记忆）
-   ② 本章埋下的伏笔
-   ③ 本章回收的伏笔（与登记表标题匹配）
-   失败不影响写作流程——概要缺失只是记忆变弱，不算错误 */
-static void record_chapter_memory(engine_state_t *state, novel_project_t *proj,
-                                  int chapter_index)
-{
-    chapter_t *ch = project_get_chapter(proj, chapter_index);
-    if (!ch || !ch->content || !*ch->content) return;
-
-    /* 已有概要就不重复花一次调用（手动重写同章会走这里，别浪费配额） */
-    if (ch->summary && *ch->summary) return;
-
-    strbuf_t *prompt = strbuf_create(2048);
-    strbuf_append(prompt, "以下是刚写完的小说章节。请只输出一行 JSON（不要代码块、不要解释），格式：\n");
-    strbuf_append(prompt, "{\"summary\":\"本章剧情梗概，60字以内\",\"planted\":[\"本章埋下的伏笔简称\"],\"resolved\":[\"本章回收的伏笔简称\"]}\n");
-    strbuf_append(prompt, "planted/resolved 没有就给空数组。伏笔简称要短且稳定（如「骨灯的来历」），便于跨章追踪。\n\n");
-    strbuf_append(prompt, "【章节标题】");
-    strbuf_append(prompt, ch->title ? ch->title : "");
-    strbuf_append(prompt, "\n\n【章节正文】\n");
-    strbuf_append_len(prompt, ch->content, utf8_safe_len(ch->content, 6000));
-
-    /* 短输出：登记不需要思考余量，压回小额度省时间 */
-    ai_config_t *ai = get_engine(state)->config->ai;
-    int saved_max = ai->max_tokens;
-    if (ai->max_tokens < 1024) ai->max_tokens = 1024;
-    ai_response_t *resp = engine_ai_call(state, ai,
-        "你是一个严谨的小说连载记录员，只输出 JSON。",
-        prompt->data);
-    ai->max_tokens = saved_max;
-    strbuf_destroy(prompt);
-
-    if (!resp || !resp->success || !resp->content) {
-        if (resp) ai_response_destroy(resp);
-        return;
-    }
-
-    /* 容错解析：截取第一个 { 到最后一个 } */
-    const char *s = strchr(resp->content, '{');
-    const char *e = strrchr(resp->content, '}');
-    if (s && e && e > s) {
-        char *json_buf = (char*)malloc((size_t)(e - s) + 2);
-        if (json_buf) {
-            memcpy(json_buf, s, (size_t)(e - s) + 1);
-            json_buf[e - s + 1] = '\0';
-            cJSON *j = cJSON_Parse(json_buf);
-            if (j) {
-                const cJSON *sum = cJSON_GetObjectItem(j, "summary");
-                if (cJSON_IsString(sum) && sum->valuestring && *sum->valuestring) {
-                    free(ch->summary);
-                    ch->summary = str_dup(sum->valuestring);
-                }
-                const cJSON *pl = cJSON_GetObjectItem(j, "planted");
-                if (cJSON_IsArray(pl)) {
-                    int n = cJSON_GetArraySize(pl);
-                    for (int k = 0; k < n; k++) {
-                        const cJSON *it = cJSON_GetArrayItem(pl, k);
-                        if (cJSON_IsString(it) && it->valuestring)
-                            project_add_foreshadow(proj, it->valuestring, "",
-                                                   chapter_index);
-                    }
-                }
-                const cJSON *rs = cJSON_GetObjectItem(j, "resolved");
-                if (cJSON_IsArray(rs)) {
-                    int n = cJSON_GetArraySize(rs);
-                    for (int k = 0; k < n; k++) {
-                        const cJSON *it = cJSON_GetArrayItem(rs, k);
-                        if (cJSON_IsString(it) && it->valuestring)
-                            project_resolve_foreshadow(proj, it->valuestring,
-                                                       chapter_index);
-                    }
-                }
-                cJSON_Delete(j);
-            }
-            free(json_buf);
-        }
-    }
-    ai_response_destroy(resp);
 }
 
 /* ai_stream_cb -> chapter_delta_cb 转发：把当前章节索引一起带给 host */
@@ -903,10 +724,10 @@ int engine_expand_chapter(engine_state_t *state, novel_project_t *proj,
         /* 流式：注册了增量回调就走 SSE，让前端实时看到正文逐段长出来 */
         if (state->chapter_delta_cb) {
             delta_ctx_t dctx = { state, chapter_index };
-            resp = ai_chat_single_stream(ai, system_prompt, prompt->data,
+            resp = ai_chat_single_stream(ai, system_prompt, strbuf_text(prompt),
                                          chapter_delta_trampoline, &dctx);
         } else
-            resp = ai_chat_single(ai, system_prompt, prompt->data);
+            resp = ai_chat_single(ai, system_prompt, strbuf_text(prompt));
         ai->max_tokens = saved_max;
         strbuf_destroy(prompt);
         free(system_prompt);
@@ -946,13 +767,24 @@ int engine_expand_chapter(engine_state_t *state, novel_project_t *proj,
     return 0;
 }
 
-int engine_expand_all_chapters(engine_state_t *state, novel_project_t *proj, int target_words)
+int engine_expand_all_chapters(engine_state_t *state, novel_project_t *proj,
+                               int target_words, int force)
 {
     if (!state || !proj || proj->chapter_count == 0) return -1;
     
     int total = proj->chapter_count;
+    int skipped = 0;
     for (int i = 0; i < total; i++) {
         CANCEL_CHECK(state);
+        /* 已写完的章默认跳过：批量扩写不该把成品推倒重写（白烧 token 还毁稿）。
+           force=1 时无条件覆盖（UI「全部重写」按钮）。字数按 3 字节/汉字估算。 */
+        if (!force && proj->chapters[i].content && *proj->chapters[i].content) {
+            size_t len = strlen(proj->chapters[i].content);
+            if (target_words > 0 && len >= (size_t)target_words * 3 / 10 * 9) {
+                skipped++;
+                continue;
+            }
+        }
         report_progress(state, "批量扩写", i, total, proj->chapters[i].title);
         int ret = engine_expand_chapter(state, proj, i, target_words);
         if (ret != 0) return ret;
@@ -961,6 +793,9 @@ int engine_expand_all_chapters(engine_state_t *state, novel_project_t *proj, int
             set_error(state, "章节保存失败，已中止（防止进度丢失）");
             return -1;
         }
+    }
+    if (skipped > 0) {
+        report_progress(state, "批量扩写", total, total, "完成（已完成章节跳过，强制重写可覆盖）");
     }
     return 0;
 }
@@ -1005,14 +840,14 @@ double engine_check_consistency(engine_state_t *state, novel_project_t *proj, in
     
     ai_response_t *resp = engine_ai_call(state, get_engine(state)->config->ai,
         "你是一位严谨的小说编辑，擅长发现作品中的设定矛盾和逻辑漏洞。请客观、严格地进行评审。",
-        prompt->data);
+        strbuf_text(prompt));
     strbuf_destroy(prompt);
     
     if (!resp || !resp->success) {
         set_error(state, resp && resp->error ? resp->error : "AI request failed");
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return 0.0;
+        return -1.0;   /* 失败必须负数：0.0 会被当真实评分"完全不一致" */
     }
     
     /* 解析评分 */
@@ -1114,6 +949,7 @@ int engine_auto_write(engine_state_t *state, novel_project_t *proj,
             if (ret != 0) { state->is_running = 0; return ret; }
             if (project_save(proj, get_engine(state)->config->projects_dir) != 0) {
                 set_error(state, "章节保存失败，已中止（防止进度丢失）");
+                state->is_running = 0;
                 return -1;
             }
         }
@@ -1125,6 +961,7 @@ int engine_auto_write(engine_state_t *state, novel_project_t *proj,
             if (ret != 0) { state->is_running = 0; return ret; }
             if (project_save(proj, get_engine(state)->config->projects_dir) != 0) {
                 set_error(state, "章节保存失败，已中止（防止进度丢失）");
+                state->is_running = 0;
                 return -1;
             }
         }
@@ -1155,13 +992,17 @@ int engine_auto_write(engine_state_t *state, novel_project_t *proj,
     if (ccount == ENGINE_CANCELLED) { state->is_running = 0; return ENGINE_CANCELLED; }
     if (ccount <= 0) { state->is_running = 0; return -1; }
     
-    /* 大纲完成即落盘：后续扩写逐章保存 */
-    project_save(proj, get_engine(state)->config->projects_dir);
+    /* 大纲完成即落盘：后续扩写逐章保存。落盘失败继续会把风险放大到全部章节 */
+    if (project_save(proj, get_engine(state)->config->projects_dir) != 0) {
+        set_error(state, "项目保存失败，已中止（防止进度丢失）");
+        state->is_running = 0;
+        return -1;
+    }
     
     /* 阶段4：正文扩写（expand_all 内部已逐章落盘） */
     report_progress(state, "自动写作", 4, 5, "阶段4：正文扩写");
     {
-        int ret = engine_expand_all_chapters(state, proj, words_per_chapter);
+        int ret = engine_expand_all_chapters(state, proj, words_per_chapter, 1);
         /* 必须同时处理失败(-1)与取消(-2)：忽略 -1 会让部分章节没写完
            却照样返回成功，UI 随后导出"看似完成"的残缺文章 */
         if (ret != 0) { state->is_running = 0; return ret; }
@@ -1181,92 +1022,6 @@ consistency_stage:
     free(proj->current_stage); proj->current_stage = str_dup("writing");
     state->is_running = 0;
     return 0;
-}
-
-/* ============== 世界观与人物智能分析 ============== */
-
-/* 在 [content, end) 内查找 "kw：" 并把该行的值拷入 out（UTF-8 安全截断）。
-   end 为 NULL 表示不设上界。
-   找不到时把 out 置为空串 —— 绝不能"保持原值不动"：AI 漏写某个字段是常态，
-   之前调用方没初始化缓冲区，于是未初始化的栈内容会被当成字段值一路写进
-   project.json 并拼进后续提示词。所有出口都必须以 '\0' 收尾。 */
-static void extract_field(const char *content, const char *end,
-                          const char *kw, char *out, size_t max)
-{
-    const char *pos, *p, *e;
-    size_t len;
-
-    if (!out || max == 0) return;
-    out[0] = '\0';
-    if (!content || !kw) return;
-
-    pos = strstr(content, kw);
-    if (!pos || (end && pos >= end)) return;
-    p = u8_after(pos, kw);
-    if (*p == ':') p++;
-    else if (U8_EQ(p, "：")) p += 3;
-    while (*p == ' ' || *p == '\t') p++;
-
-    e = p;
-    while (*e && *e != '\n' && *e != '\r' && (!end || e < end)) e++;
-    len = (size_t)(e - p);
-    if (len > max - 1) len = utf8_safe_len(p, max - 1);
-    memcpy(out, p, len);
-    out[len] = '\0';
-}
-
-/* 解析 AI 输出中的人物块（姓名/定位/性格/背景/外貌），逐个追加到项目。
-   每个块从一处 "姓名" 到下一处 "姓名" 之间，字段不会串到下一个人。
-   返回解析出的人物数 */
-static int parse_characters_from(const char *content, novel_project_t *proj)
-{
-    const char *cp = content;
-    int added = 0;
-
-    if (!content || !proj) return 0;
-    while (cp && *cp) {
-        const char *name_pos = strstr(cp, "姓名");
-        const char *next_pos;
-        /* 必须初始化：extract_field 虽然现在会自行置空串，但这里显式写清楚
-           意图，避免以后有人改动 extract_field 时又踩回未初始化栈内存。 */
-        char name_buf[128] = {0};
-        char role_buf[128] = {0};
-        char trait_buf[512] = {0};
-        char bg_buf[1024] = {0};
-        char desc_buf[512] = {0};
-
-        if (!name_pos) break;
-        next_pos = strstr(u8_after(name_pos, "姓名"), "姓名");
-
-        extract_field(name_pos, next_pos, "姓名", name_buf, sizeof(name_buf));
-        extract_field(name_pos, next_pos, "定位", role_buf, sizeof(role_buf));
-        extract_field(name_pos, next_pos, "性格", trait_buf, sizeof(trait_buf));
-        extract_field(name_pos, next_pos, "背景", bg_buf, sizeof(bg_buf));
-        extract_field(name_pos, next_pos, "外貌", desc_buf, sizeof(desc_buf));
-
-        if (name_buf[0]) {
-            project_add_character(proj, name_buf, role_buf, desc_buf, trait_buf, bg_buf);
-            added++;
-        }
-        cp = next_pos;
-    }
-    return added;
-}
-
-/* 解析 AI 输出中的世界观三字段并写入项目（空字段保留原值） */
-static void parse_worldview_from(const char *content, novel_project_t *proj)
-{
-    char wt[128], setting[2048], power[1024];
-    wt[0] = setting[0] = power[0] = '\0';
-
-    extract_field(content, NULL, "世界类型", wt, sizeof(wt));
-    extract_field(content, NULL, "背景设定", setting, sizeof(setting));
-    extract_field(content, NULL, "力量体系", power, sizeof(power));
-
-    project_set_world(proj,
-                      wt[0] ? wt : NULL,
-                      setting[0] ? setting : NULL,
-                      power[0] ? power : NULL);
 }
 
 int engine_generate_characters(engine_state_t *state, novel_project_t *proj)
@@ -1305,7 +1060,7 @@ int engine_generate_characters(engine_state_t *state, novel_project_t *proj)
     report_progress(state, "人物生成", 2, 3, "AI 正在分析人物...");
     resp = engine_ai_call(state, eng->config->ai,
         "你是一位人物设定专家，擅长从小说文本中提炼鲜活立体的角色档案。",
-        prompt->data);
+        strbuf_text(prompt));
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {
@@ -1370,7 +1125,7 @@ int engine_summarize_worldview(engine_state_t *state, novel_project_t *proj)
     report_progress(state, "世界观总结", 2, 3, "AI 正在总结世界观...");
     resp = engine_ai_call(state, eng->config->ai,
         "你是一位世界观架构师，擅长从故事文本中归纳出严谨自洽的世界设定。",
-        prompt->data);
+        strbuf_text(prompt));
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {
@@ -1423,7 +1178,7 @@ int engine_check_finale(engine_state_t *state, novel_project_t *proj)
     report_progress(state, "伏笔校验", 2, 3, "AI 正在校验伏笔回收...");
     resp = engine_ai_call(state, eng->config->ai,
         "你是一位资深小说编辑，擅长审查长篇小说的伏笔回收与设定一致性。",
-        prompt->data);
+        strbuf_text(prompt));
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {
@@ -1479,7 +1234,7 @@ int engine_analyze_text(engine_state_t *state, novel_project_t *proj, const char
     report_progress(state, "文本分析", 2, 3, "AI 正在分析文本...");
     resp = engine_ai_call(state, eng->config->ai,
         "你是一位资深小说编辑，擅长从文本中提炼世界观设定与人物档案。",
-        prompt->data);
+        strbuf_text(prompt));
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {

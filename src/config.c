@@ -160,6 +160,7 @@ app_config_t* config_load(const char *path)
     if (!cfg) { cJSON_Delete(root); return NULL; }
     
     cfg->ai = ai_config_create();
+    if (!cfg->ai) { cJSON_Delete(root); free(cfg); return NULL; }   /* OOM：下面 free(cfg->ai->...) 会空指针解引用 */
     
     cJSON *ai_obj = cJSON_GetObjectItem(root, "ai");
     if (ai_obj) {
@@ -246,9 +247,15 @@ app_config_t* config_load(const char *path)
     }
 
     /* 自愈失效的 projects_dir：config.json 里的绝对路径在目录被重命名/移动后会
-       指向不存在的目录，导致保存项目失败。若不存在或为空，回退到 exe 目录下的
-       projects（首次运行/移动程序后都能自动恢复正确路径） */
-    if (!cfg->projects_dir || !*cfg->projects_dir || !file_exists(cfg->projects_dir)) {
+       指向不存在的目录。但「不存在」不等于「失效」——用户新配的路径可能只是还没建，
+       先尝试创建（帮建目录），建得出来就用；建不出来才回退 exe\projects。
+       绝不能没建就判死刑：那会把用户刚配的路径静默改掉并永久写回 config */
+    if (!cfg->projects_dir || !*cfg->projects_dir) {
+        free(cfg->projects_dir);
+        char *exe_dir = get_exe_dir();
+        cfg->projects_dir = path_join(exe_dir, "projects");
+        free(exe_dir);
+    } else if (!file_exists(cfg->projects_dir) && ensure_dir(cfg->projects_dir) != 0) {
         free(cfg->projects_dir);
         char *exe_dir = get_exe_dir();
         cfg->projects_dir = path_join(exe_dir, "projects");

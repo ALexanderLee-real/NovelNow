@@ -62,3 +62,8 @@ desktop.ini
 bin/
 HANDOFF.md
 鍏嶈垂妯″瀷API娉ㄥ唽鎸囧崡.md
+
+# 拆分期临时产物（原文件备份/编译输出），不进仓库
+*.pre-split.bak
+build_out.txt
+
