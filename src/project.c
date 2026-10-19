@@ -300,6 +300,7 @@ void project_add_chapter(novel_project_t *proj, const char *title, const char *s
     ch->word_count = 0;
     ch->status = 0;
     ch->iteration_count = 0;
+    ch->memory_recorded = 0;
     proj->chapter_count++;
 }
 
@@ -318,6 +319,8 @@ void project_update_chapter_content(novel_project_t *proj, int index, const char
     /* 字数应统计字符数而非字节数：中文每字 3 字节，按字节统计会虚高 3 倍 */
     ch->word_count = (int)utf8_char_count(content);
     ch->status = 2;
+    /* 正文变了，旧的「实际梗概/伏笔账」不再作数，下次写完重新记账 */
+    ch->memory_recorded = 0;
     project_calc_total_words(proj);
 }
 
@@ -818,6 +821,7 @@ int project_save(novel_project_t *proj, const char *dir)
         cJSON_AddNumberToObject(c, "word_count", proj->chapters[i].word_count);
         cJSON_AddNumberToObject(c, "status", proj->chapters[i].status);
         cJSON_AddNumberToObject(c, "iteration_count", proj->chapters[i].iteration_count);
+        cJSON_AddNumberToObject(c, "memory_recorded", proj->chapters[i].memory_recorded);
         cJSON_AddItemToArray(chaps, c);
     }
     cJSON_AddItemToObject(root, "chapters", chaps);
@@ -1002,6 +1006,8 @@ novel_project_t* project_load(const char *path)
                 ch->status = item->valueint;
             if ((item = cJSON_GetObjectItem(c, "iteration_count")) && cJSON_IsNumber(item))
                 ch->iteration_count = item->valueint;
+            if ((item = cJSON_GetObjectItem(c, "memory_recorded")) && cJSON_IsNumber(item))
+                ch->memory_recorded = item->valueint;
         }
     }
     

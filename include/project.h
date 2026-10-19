@@ -31,6 +31,8 @@ typedef struct {
     int word_count;       /* 字数 */
     int status;           /* 0=未写, 1=写作中, 2=已完成, 3=已审核 */
     int iteration_count;  /* 迭代次数 */
+    int memory_recorded;  /* 已记账：实际梗概+伏笔已登记（0=未，1=已）。
+                             概要本身不能当记账标志——大纲生成的章自带概要 */
 } chapter_t;
 
 /* 人物角色 */

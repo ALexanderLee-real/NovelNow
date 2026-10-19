@@ -1,4 +1,4 @@
-﻿/* engine_flow.c - engine flow/API implementation, split from engine.c (2026-10-18, zero behavior change) */
+/* engine_flow.c - engine flow/API implementation, split from engine.c (2026-10-18, zero behavior change) */
 #include "engine_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -413,11 +413,9 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
     CANCEL_CHECK(state);
     report_progress(state, "大纲细化", 0, 3, "正在细化大纲为章节...");
 
-    /* 必须先清空已有章节：engine_auto_write 或手动二次细化会再次进入本函数，
-       若不清空则 project_add_chapter 会把新解析的章节追加在旧章节之后，
-       导致章节数翻倍（用户要 15 章最终变成 30 章） */
-    project_clear_chapters(proj);
-
+    /* 这里绝不能提前 project_clear_chapters：AI 失败/解析失败/取消都要保留旧章节
+       （P0 数据丢失）。章节数翻倍的防护由下方「解析成功才替换」的 clear 负责：
+       project_build_context_summary 不含章节，提早清空对 prompt 没有任何贡献 */
     char *context = project_build_context_summary(proj);
     
     strbuf_t *prompt = strbuf_create(4096);
