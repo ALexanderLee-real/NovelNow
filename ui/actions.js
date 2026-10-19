@@ -1,4 +1,4 @@
-﻿/* actions.js - event bindings + project actions + theme + startup/handshake (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
+/* actions.js - event bindings + project actions + theme + startup/handshake (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
 /* ============================================================
  * 12. 交互绑定
  * ============================================================ */
@@ -230,6 +230,9 @@ function collectCfg() {
     rateLimitMs: Math.max(0, parseInt($('rateLimitMs').value, 10) || 0),
     maxRetries: Math.max(0, parseInt($('maxRetries').value, 10) || 0),
     enableConsistencyCheck: $('consistency').checked,
+    comfyUrl: $('comfyUrl') ? $('comfyUrl').value.trim() : (S.cfg.comfyUrl || ''),
+    comfyWorkflowPath: $('comfyWfPath') ? $('comfyWfPath').value.trim() : (S.cfg.comfyWorkflowPath || ''),
+    comfyAutoBg: $('comfyAutoBg') ? $('comfyAutoBg').checked : !!S.cfg.comfyAutoBg,
     projectsDir: projDir,
     exportDir: expDir
   };
@@ -399,10 +402,12 @@ $('moreMenu').addEventListener('click', e => {
 $('btnCancel').onclick = () => {
   fire('cancel', {});
   /* 同步收掉在飞的 aiCall：取消后 task_done 的 cmd 不一定是 ai_call，
-     不手动 reject 就永久悬挂 */
-  if (G.cb) { const prev = G.cb; G.cb = null; prev.reject(new Error('已取消')); }
-  G.awaiting = null;
-  G.streamRaw = '';
+     不手动 reject 就永久悬挂（typeof G：纯小说版无 gal.js） */
+  if (typeof G !== 'undefined') {
+    if (G.cb) { const prev = G.cb; G.cb = null; prev.reject(new Error('已取消')); }
+    G.awaiting = null;
+    G.streamRaw = '';
+  }
   $('btnCancel').disabled = true;
 };
 
@@ -439,7 +444,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.ctrlKey && e.key >= '1' && e.key <= '5') {
     e.preventDefault();
-    goPage(['idea', 'plan', 'outline', 'gal', 'settings'][+e.key - 1]);
+    goPage(['idea', 'plan', 'outline', 'galnow', 'settings'][+e.key - 1]);
   }
 });
 
@@ -500,7 +505,7 @@ if (bridge) {
       /* 握手自检：hello 走的是 JS -> C，这里补一次 ping 证明 C -> JS 也通。
          C 侧收到 ping 会打一条「闭环确认」日志，排查白屏时先看它。 */
       send('ping', {}).catch(() => {});
-      galLoad();   /* 恢复剧情分支状态（项目里存过才有） */
+      if (typeof galLoad === 'function') galLoad();   /* 恢复剧情分支状态（项目里存过才有） */
       if (!S.cfg.apiKey) {
         toast('info', '还没有配置 API Key，去「设置」页填一下就能用了');
       }

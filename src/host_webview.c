@@ -1,4 +1,4 @@
-﻿/* host_webview.c - WebView2 COM callbacks + screenshots + WndProc + WinMain (split from host.c 2026-10-18, zero behavior change) */
+/* host_webview.c - WebView2 COM callbacks + screenshots + WndProc + WinMain (split from host.c 2026-10-18, zero behavior change) */
 #include "host_internal.h"
 
 
@@ -676,6 +676,21 @@ HRESULT STDMETHODCALLTYPE CtrlCB_Invoke(
 void handle_task_done(task_done_t *t)
 {
     const char *cmd = t->cmd;
+
+    /* ComfyUI 配图结果：不占忙闲位（没过 try_begin_task），绝不能落进下面
+       通用收尾——那里的 end_task() 会把正在跑的 AI 任务的忙闲状态踩掉，
+       task_done 事件也会让前端误 setBusy(false)。走专用 comfy_done 事件。 */
+    if (strcmp(cmd, "comfy_test") == 0 || strcmp(cmd, "comfy_gen") == 0) {
+        cJSON *d = cJSON_CreateObject();
+        cJSON_AddBoolToObject(d, "ok", t->ok);
+        add_str(d, "cmd", cmd);
+        add_str(d, "message", t->message);
+        if (t->payload) add_str(d, "text", t->payload);  /* {"node":..,"path":..} */
+        push_event("comfy_done", d);
+        push_status(t->message);
+        if (!t->ok) push_toast("error", t->message);
+        return;
+    }
 
     /* 加载项目：把工作线程解析好的 project 换上 */
     if (strcmp(cmd, "load_project") == 0) {

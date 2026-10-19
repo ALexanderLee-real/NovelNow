@@ -1,6 +1,18 @@
-﻿/* i18n.js - i18n engine (walk/apply/observer/init) (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
+/* i18n.js - i18n engine (walk/apply/observer/init) (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
 let I18N_LANG = 'en';
 let i18nWalking = false;
+
+/* 同步原生窗口标题（C 侧 set_title -> SetWindowTextW）。
+   i18n.js 先于 core.js 加载，initI18n 里的同步调用拿不到 send/fire，
+   这里直接裸 postMessage（C 回 id=0 的 result 会被 core.js pending 表静默丢弃）。 */
+function i18nSyncTitle(t) {
+  try {
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage(JSON.stringify(
+        { cmd: 'set_title', id: 0, params: { title: String(t || '') } }));
+    }
+  } catch (_) {}
+}
 
 function i18nMapText(s) {
   if (I18N_LANG === 'zh-CN') return s;
@@ -32,7 +44,8 @@ function i18nWalkNode(node, mode) {
   }
   if (node.nodeType !== 1) return;
   const tag = node.tagName;
-  if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' || tag === 'CODE' || tag === 'PRE') return;
+  /* placeholder 属性要先翻：TEXTAREA 正文不走查，但它的 placeholder 必须翻，
+     所以这段放在标签跳过判断之前（原顺序会把 textarea 的 placeholder 一起跳掉）。 */
   if (tag !== 'SELECT' && node.hasAttribute && node.hasAttribute('placeholder')) {
     const v = node.getAttribute('placeholder');
     if (v && v.trim()) {
@@ -40,6 +53,7 @@ function i18nWalkNode(node, mode) {
       if (nt !== v.trim()) node.setAttribute('placeholder', v.replace(v.trim(), nt));
     }
   }
+  if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' || tag === 'CODE' || tag === 'PRE') return;
   const kids = node.childNodes;
   for (let i = 0; i < kids.length; i++) i18nWalkNode(kids[i], mode);
 }
@@ -58,6 +72,7 @@ function applyLanguage(l) {
   try { store.set('novelnow-lang', l); } catch (_) {}
   document.documentElement.lang = l;
   document.title = I18N_TITLE[l] || I18N_TITLE['zh-CN'];
+  i18nSyncTitle(document.title);
   const sel = document.getElementById('langSel');
   if (sel && sel.value !== l) sel.value = l;
 }
@@ -84,6 +99,7 @@ const i18nObserver = new MutationObserver(muts => {
   if (saved !== 'zh-CN') i18nApplyAll('translate');
   document.documentElement.lang = saved;
   document.title = I18N_TITLE[saved] || I18N_TITLE['zh-CN'];
+  i18nSyncTitle(document.title);
   const sel = document.getElementById('langSel');
   if (sel) {
     sel.value = saved;

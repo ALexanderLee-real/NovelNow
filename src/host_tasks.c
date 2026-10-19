@@ -1,5 +1,6 @@
-﻿/* host_tasks.c - ask (cross-thread confirm) + progress/delta callbacks + worker threads (split from host.c 2026-10-18, zero behavior change) */
+/* host_tasks.c - ask (cross-thread confirm) + progress/delta callbacks + worker threads (split from host.c 2026-10-18, zero behavior change) */
 #include "host_internal.h"
+#include "comfy_api.h"
 
 
 /* ============================================================
@@ -482,6 +483,66 @@ DWORD WINAPI th_load_project(LPVOID param)
             if (proj) project_destroy(proj);
             task_done_free(t);
         }
+    }
+    return 0;
+}
+
+/* ============================================================
+ * 13. ComfyUI 配图（不占忙闲位，可与 AI 任务并行）
+ *     结果走 comfy_done 专用事件，不混进 task_done：
+ *     task_done 收尾会 end_task()+setBusy(false)，会把正在跑的
+ *     AI 任务的忙闲状态踩掉，所以 handle_task_done 里单独分叉。
+ * ============================================================ */
+
+/* comfy_test：GET /system_stats 探活，参数是已复制好的基地址 */
+DWORD WINAPI th_comfy_test(LPVOID param)
+{
+    char *url = (char *)param;
+    char err[512] = "";
+    int ok = (url && comfy_test(url, err, sizeof(err)) == 0);
+    task_done_t *d;
+    free(url);
+    d = (task_done_t *)calloc(1, sizeof(task_done_t));
+    if (!d) return 0;
+    snprintf(d->cmd, sizeof(d->cmd), "comfy_test");
+    d->ok = ok ? 1 : 0;
+    d->chapter = -1;
+    snprintf(d->message, sizeof(d->message), "%s",
+             ok ? "ComfyUI 连接成功" : (err[0] ? err : "ComfyUI 连接失败"));
+    if (!PostMessageW(g_hwnd, NWM_TASK_DONE, (WPARAM)d, 0)) task_done_free(d);
+    return 0;
+}
+
+/* comfy_gen：生成一张配图。payload 回 {"node":...,"path":...}，前端再用
+   read_image 换 data URL 当背景。OOM/失败都必须回执，否则前端 pending 永挂。 */
+DWORD WINAPI th_comfy_gen(LPVOID param)
+{
+    comfy_gen_task_t *t = (comfy_gen_task_t *)param;
+    char err[512] = "";
+    task_done_t *d;
+    int ok;
+    if (!t) return 0;
+    ok = (comfy_generate(t->url, t->workflow_json, t->prompt, t->out_path,
+                         err, sizeof(err)) == 0);
+    d = (task_done_t *)calloc(1, sizeof(task_done_t));
+    if (d) {
+        cJSON *p = cJSON_CreateObject();
+        snprintf(d->cmd, sizeof(d->cmd), "comfy_gen");
+        d->ok = ok ? 1 : 0;
+        d->chapter = -1;
+        snprintf(d->message, sizeof(d->message), "%s",
+                 ok ? "配图已生成" : (err[0] ? err : "配图生成失败"));
+        if (p) {
+            cJSON_AddStringToObject(p, "node", t->node ? t->node : "");
+            if (ok) cJSON_AddStringToObject(p, "path", t->out_path ? t->out_path : "");
+            d->payload = cJSON_PrintUnformatted(p);
+            cJSON_Delete(p);
+        }
+    }
+    free(t->node); free(t->url); free(t->workflow_json);
+    free(t->prompt); free(t->out_path); free(t);
+    if (d) {
+        if (!PostMessageW(g_hwnd, NWM_TASK_DONE, (WPARAM)d, 0)) task_done_free(d);
     }
     return 0;
 }

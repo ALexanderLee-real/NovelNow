@@ -1,4 +1,4 @@
-﻿/* gal.js - galgame branch engine (state G + prompt pipeline) (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
+/* gal.js - galgame branch engine (state G + prompt pipeline) (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
 /* ============================================================
  * 11.5 剧情分支（galgame 实时定制）
  * 多提示词管线：L0 高概念 → L1 企划 → L2 路线大纲 → L3 场景（流式）→ L4 选项
@@ -48,25 +48,112 @@ function galOnDone(d) {
   else cb.reject(new Error(d.message || 'AI 调用失败'));
 }
 
-/* 剧情正文渲染（三处共用：流式重绘 / 节点恢复 / 树上点看旧节点） */
+/* ============ 对话演出引擎 ============
+   剧本行格式：【说话人】台词 /【旁白】描写（行首无【】也按旁白）。
+   演出：逐句打字机 + 说话人名牌 + 点击/空格推进，整节演完才出选项。
+   不再像小说一样整篇流式铺开（用户点名要 galgame 对话体）。 */
+const GAL_PLAY = { lines: [], idx: 0, shown: 0, typing: false, timer: null, onEnd: null, active: false };
+
+function galParseScript(text) {
+  const out = [];
+  String(text || '').split(/\r?\n/).forEach(raw => {
+    const s = raw.replace(/^\s+|\s+$/g, '');
+    if (!s) return;
+    const m = s.match(/^[【\[]([^】\]]{1,12})[】\]]\s*(.*)$/);
+    out.push(m ? { who: m[1].replace(/^\s+|\s+$/g, ''), text: m[2] } : { who: '', text: s });
+  });
+  return out;
+}
+
+function galPlayStop() {
+  if (GAL_PLAY.timer) { clearInterval(GAL_PLAY.timer); GAL_PLAY.timer = null; }
+  GAL_PLAY.typing = false;
+  GAL_PLAY.active = false;
+}
+
+function galPlayLine() {
+  const line = GAL_PLAY.lines[GAL_PLAY.idx];
+  $('galNodeInfo').textContent = line.who || '旁白';
+  const box = $('galText');
+  box.classList.toggle('is-narration', !line.who);
+  box.innerHTML = '<div class="gal-line"></div><div class="gal-hint"></div>';
+  const el = box.querySelector('.gal-line');
+  const hint = box.querySelector('.gal-hint');
+  const full = String(line.text || '');
+  GAL_PLAY.shown = 0;
+  GAL_PLAY.typing = true;
+  if (GAL_PLAY.timer) clearInterval(GAL_PLAY.timer);
+  GAL_PLAY.timer = setInterval(() => {
+    GAL_PLAY.shown += 1;
+    el.innerHTML = esc(full.slice(0, GAL_PLAY.shown)) + '<span class="gal-caret">▍</span>';
+    if (GAL_PLAY.shown >= full.length) {
+      clearInterval(GAL_PLAY.timer); GAL_PLAY.timer = null;
+      GAL_PLAY.typing = false;
+      el.innerHTML = esc(full);
+      hint.textContent = '点击继续 ▸';
+    }
+  }, 30);
+  if (!full.length) {
+    clearInterval(GAL_PLAY.timer); GAL_PLAY.timer = null;
+    GAL_PLAY.typing = false;
+    hint.textContent = '点击继续 ▸';
+  }
+}
+
+function galAdvance() {
+  if (!GAL_PLAY.active) return;
+  const box = $('galText');
+  if (GAL_PLAY.typing) {
+    /* 第一下点击：立刻显示整句（跳过打字机） */
+    if (GAL_PLAY.timer) { clearInterval(GAL_PLAY.timer); GAL_PLAY.timer = null; }
+    GAL_PLAY.typing = false;
+    const line = GAL_PLAY.lines[GAL_PLAY.idx];
+    const el = box.querySelector('.gal-line');
+    if (el) el.innerHTML = esc(line.text || '');
+    const hint = box.querySelector('.gal-hint');
+    if (hint) hint.textContent = '点击继续 ▸';
+    return;
+  }
+  if (GAL_PLAY.idx < GAL_PLAY.lines.length - 1) {
+    GAL_PLAY.idx += 1;
+    galPlayLine();
+  } else {
+    const cb = GAL_PLAY.onEnd;
+    galPlayStop();
+    if (cb) cb();
+  }
+}
+
+function galPlayNode(node, onEnd) {
+  galPlayStop();
+  $('galChoices').innerHTML = '';
+  $('galBtnNext').disabled = true;
+  const lines = galParseScript(node && node.text);
+  if (!lines.length) {
+    galRenderNodeText(node && node.text);   /* 空/异常文本走静态兜底 */
+    if (onEnd) onEnd();
+    return;
+  }
+  GAL_PLAY.lines = lines;
+  GAL_PLAY.idx = 0;
+  GAL_PLAY.onEnd = onEnd || null;
+  GAL_PLAY.active = true;
+  galPlayLine();
+}
+
+/* 静态兜底渲染（空文本/异常时） */
 function galRenderNodeText(text) {
   $('galText').innerHTML = '<div class="gal-para">' + esc(String(text || '')).replace(/\n{2,}/g, '</div><div class="gal-para">').replace(/\n/g, '<br>') + '</div>';
 }
 
-/* 流式重绘用 rAF 合帧：SSE 增量每秒几十条，逐条全量重建 DOM 是 O(n²) */
-let galRenderQueued = false;
+/* 生成中：只提示进度，正文等剧本到手后逐句播出（不整篇流铺） */
 function galStream(delta) {
   if (!delta) return;
   G.streamRaw += delta;
-  if (galRenderQueued) return;
-  galRenderQueued = true;
-  requestAnimationFrame(() => {
-    galRenderQueued = false;
-    const cut = G.streamRaw.indexOf(GAL_MARKER);
-    galRenderNodeText((cut >= 0 ? G.streamRaw.slice(0, cut) : G.streamRaw).replace(/^\s+/, ''));
-    const box = $('galText');
-    box.scrollTop = box.scrollHeight;
-  });
+  const box = $('galText');
+  if (box && !box.querySelector('.gal-typing')) {
+    box.innerHTML = '<div class="gal-typing">剧本生成中…</div>';
+  }
 }
 
 function galSetPhase(t) { $('galPhase').textContent = t; }
@@ -98,8 +185,18 @@ function galRenderTree() {
     el.onclick = () => {
       const n = G.nodes[el.dataset.node];
       if (!n) return;
-      galRenderNodeText(n.text);
-      $('galNodeInfo').textContent = n.title || n.id;
+      /* 树上点看旧节点也走对话演出；只有看的正是当前节点才收尾出选项 */
+      const isCur = (n.id === G.current);
+      galPlayNode(n, () => {
+        if (isCur) {
+          if (n.choices && n.choices.length) galRenderChoices(n);
+          else $('galBtnNext').disabled = false;
+        } else {
+          /* 看的是旧节点：按钮状态还原成当前节点的 */
+          const cur = G.nodes[G.current];
+          $('galBtnNext').disabled = !!(cur && cur.choices && cur.choices.length);
+        }
+      });
     };
   });
 }
@@ -112,7 +209,7 @@ function galRenderChoices(node) {
     const b = document.createElement('button');
     b.className = 'btn ghost gal-choice';
     b.textContent = c.label || ('选项 ' + (i + 1));
-    b.onclick = () => galChoose(node, i);
+    b.onclick = (e) => { e.stopPropagation(); galChoose(node, i); };   /* 别冒泡到舞台点击推进 */
     box.appendChild(b);
   });
 }
@@ -161,11 +258,14 @@ function galLoad() {
     galRenderTree();
     const n = G.nodes[G.current];
     if (n) {
-      galRenderNodeText(n.text);
       $('galNodeInfo').textContent = n.title || n.id;
-      if (!n.choices || !n.choices.length) $('galBtnNext').disabled = false;
-      else { $('galBtnNext').disabled = true; galRenderChoices(n); }   /* 有选项时禁「下一节」防重复节点 */
+      galPlayNode(n, () => {
+        /* 有选项时禁「下一节」防重复节点 */
+        if (!n.choices || !n.choices.length) $('galBtnNext').disabled = false;
+        else { $('galBtnNext').disabled = true; galRenderChoices(n); }
+      });
       galSetPhase('已恢复：' + (n.title || n.id));
+      comfyApplyBg(comfyCurKey());   /* 恢复舞台背景（若已生成） */
     } else if (G.plan) {
       galSetPhase('企划已就绪');
       $('galBtnNext').disabled = false;
@@ -194,8 +294,11 @@ function galSysOutline() {
 
 /* ---- L3 场景 + L4 选项 ---- */
 function galSysScene() {
-  return '你是 galgame 场景写手。写出一段可直接演出的场景正文（' + (parseInt($('galWords').value, 10) || 1000) + ' 字左右，对话:叙述≈70:30，分段，节末留悬念钩子）。\n' +
-    '正文写完后，另起一行输出 ' + GAL_MARKER + ' 然后输出选项 JSON（只输出 JSON）：\n' +
+  return '你是 galgame 场景写手。写出可直接逐句演出的对话剧本（' + (parseInt($('galWords').value, 10) || 1000) + ' 字左右）。\n' +
+    '格式：每行一句台词，句首用【说话人】标注名字；旁白/动作/景物描写用【旁白】开头。\n' +
+    '示例：\n【旁白】夜色沉了下来，走廊的灯忽明忽暗。\n【小雨】你……怎么会在这里？\n【我】我只是路过。\n' +
+    '要求：台词口语化、有情绪、有潜台词；对话:旁白≈70:30；节末留悬念钩子。\n' +
+    '剧本写完后，另起一行输出 ' + GAL_MARKER + ' 然后输出选项 JSON（只输出 JSON）：\n' +
     '{"hook":"节末悬念句","title":"本节短标题","choices":[{"label":"","kind":"plot|affection|fake","fx":{"favor":0,"trust":0,"sanity":0,"shards":0,"flags":[""]},"cond":{"favor>=2":"","flag":""},"to":"下一节点 id"}],\n' +
     '"foreshadow":["f1 埋设/回收于 cN"]}\n' +
     '规则：选项 2-4 个，其中伪选择（kind=fake，怎么选都重汇）占 30-40%；解锁条件只用阈值+布尔两段式；\n' +
@@ -291,15 +394,19 @@ async function galNextNode(first, nextHint) {
     };
     G.nodes[nextId] = node;
     G.current = nextId;
-    /* 重置流缓冲再渲染最终全文：streamRaw 里是 delta 累积，直接 galStream 会重复 */
     G.streamRaw = '';
-    galStream(text);
     G.awaiting = null;
-    $('galNodeInfo').textContent = node.title;
-    if (node.choices.length) galRenderChoices(node);
-    else $('galBtnNext').disabled = false;
+    /* 对话演出：逐句播完再出选项（继续/选项都等演完） */
+    galPlayNode(node, () => {
+      if (node.choices.length) galRenderChoices(node);
+      else $('galBtnNext').disabled = false;
+    });
     galRenderTree();
     galSave();
+    /* 配图工坊接线：本节若有预生成的背景图就铺上；
+       「自动生成背景」开着时，提前把下一节的图排进 ComfyUI 队列 */
+    comfyApplyBg(comfyCurKey());
+    comfyPreGen();
     return true;
   } catch (e) {
     toast('error', e.message || String(e));
@@ -338,11 +445,23 @@ async function galChoose(node, i) {
 /* ---- gal 页绑定 ---- */
 $('galBtnStart').onclick = galGenPlan;
 $('galBtnNext').onclick = () => galNextNode(false);
+/* 点击舞台推进台词（选项按钮已 stopPropagation） */
+$('galStage').addEventListener('click', galAdvance);
+/* 空格/回车推进台词；在输入框里打字时不劫持 */
+document.addEventListener('keydown', (e) => {
+  if (!GAL_PLAY.active) return;
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); galAdvance(); }
+});
 $('galBtnReset').onclick = () => {
+  galPlayStop();
   G.plan = null; G.outline = null; G.nodes = {}; G.current = ''; G.outlinePos = 0; G.log = [];
   G.flags = { favor: 0, trust: 0, sanity: 0, shards: 0 }; G.bools = {};
   $('galText').innerHTML = '<div class="gal-empty">尚未开始。写下想法，点「生成企划并开局」。</div>';
   $('galChoices').innerHTML = '';
+  const st = $('galStage');
+  if (st) { st.style.backgroundImage = ''; st.classList.remove('has-bg'); }   /* 清舞台背景 */
   $('galNodeInfo').textContent = '—';
   $('galBtnNext').disabled = true;
   galRenderFlags(); galRenderTree();

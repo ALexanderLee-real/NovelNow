@@ -1,4 +1,4 @@
-﻿/* core.js - bridge + send/fire + message dispatch (onMessage/handleTaskDone/askChapterReview) (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
+/* core.js - bridge + send/fire + message dispatch (onMessage/handleTaskDone/askChapterReview) (split from app.js 2026-10-18, zero behavior change; loaded in original order) */
 /* ============================================================
  * 1. 桥接
  * ============================================================ */
@@ -129,8 +129,9 @@ function onMessage(m) {
       /* 通用流式增量（方向/方案/大纲/一致性检查）：浮动面板逐字刷。
          galgame 场景流式期间改道到剧情舞台；L1 企划/L2 大纲是 JSON 元数据，
          只静默丢弃（结果走 task_done 全文），别把裸 JSON 刷进流式面板。 */
-      if (G.awaiting === 'scene') galStream(d.delta);
-      else if (G.awaiting) { /* L1/L2：静默 */ }
+      /* typeof G 守卫：纯小说版没有 gal.js，全按通用流式走 */
+      if (typeof G !== 'undefined' && G.awaiting === 'scene') galStream(d.delta);
+      else if (typeof G !== 'undefined' && G.awaiting) { /* L1/L2：静默 */ }
       else streamFeed(d.delta);
       break;
 
@@ -152,6 +153,11 @@ function onMessage(m) {
       handleTaskDone(d);
       break;
 
+    case 'comfy_done':
+      /* ComfyUI 配图回执（探活/生图完成）：不占忙闲位，只管铺背景与提示 */
+      if (typeof comfyOnDone === 'function') comfyOnDone(d);
+      break;
+
     case 'ask':
       askChapterReview(d);
       break;
@@ -162,17 +168,17 @@ function onMessage(m) {
 }
 
 function handleTaskDone(d) {
-  /* 通用 AI 调用（galgame 管线）：结果走 d.text */
-  if (d.cmd === 'ai_call') { galOnDone(d); return; }
+  /* 通用 AI 调用（galgame 管线）：结果走 d.text（typeof G：纯小说版无 gal.js） */
+  if (typeof G !== 'undefined' && d.cmd === 'ai_call') { galOnDone(d); return; }
   /* 兜底：单任务互斥下 aiCall 挂着时不可能有别的 task_done 到达；
      到了就说明 aiCall 已被取消/顶掉——收掉防 Promise 悬挂 */
-  if (G.cb) {
+  if (typeof G !== 'undefined' && G.cb) {
     const prev = G.cb; G.cb = null;
     G.awaiting = null;
     prev.reject(new Error('任务已结束（' + (d.cmd || '') + '）'));
   }
   /* 切换项目后恢复剧情分支状态 */
-  if (d.cmd === 'load_project') galLoad();
+  if (d.cmd === 'load_project' && typeof galLoad === 'function') galLoad();
 
   /* 项目结构变化的命令：刷新章节列表等 */
   if (d.cmd === 'fetch_models' && d.ok && d.models) {

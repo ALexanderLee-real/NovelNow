@@ -24,6 +24,9 @@ app_config_t* config_create_default(const char *projects_dir)
     cfg->language = str_dup("zh-CN");
     cfg->auto_save_interval = 30;
     cfg->enable_consistency_check = 0;  /* 默认关闭：自动写作阶段5跳过一致性检查以节省 token */
+    cfg->comfy_url = str_dup("http://127.0.0.1:8188");
+    cfg->comfy_workflow_path = NULL;
+    cfg->comfy_auto_bg = 0;
     
     ensure_dir(cfg->projects_dir);
     return cfg;
@@ -36,6 +39,8 @@ void config_destroy(app_config_t *cfg)
     if (cfg->projects_dir) free(cfg->projects_dir);
     if (cfg->export_dir) free(cfg->export_dir);
     if (cfg->language) free(cfg->language);
+    if (cfg->comfy_url) free(cfg->comfy_url);
+    if (cfg->comfy_workflow_path) free(cfg->comfy_workflow_path);
     free(cfg);
 }
 
@@ -246,6 +251,23 @@ app_config_t* config_load(const char *path)
         cfg->enable_consistency_check = 0;
     }
 
+    if ((item = cJSON_GetObjectItem(root, "comfy_url")) && cJSON_IsString(item)) {
+        cfg->comfy_url = str_dup(item->valuestring);
+    } else {
+        cfg->comfy_url = str_dup("http://127.0.0.1:8188");
+    }
+    if ((item = cJSON_GetObjectItem(root, "comfy_workflow_path")) && cJSON_IsString(item) &&
+        item->valuestring[0]) {
+        cfg->comfy_workflow_path = str_dup(item->valuestring);
+    } else {
+        cfg->comfy_workflow_path = NULL;
+    }
+    if ((item = cJSON_GetObjectItem(root, "comfy_auto_bg")) && cJSON_IsNumber(item)) {
+        cfg->comfy_auto_bg = item->valueint ? 1 : 0;
+    } else {
+        cfg->comfy_auto_bg = 0;
+    }
+
     /* 自愈失效的 projects_dir：config.json 里的绝对路径在目录被重命名/移动后会
        指向不存在的目录。但「不存在」不等于「失效」——用户新配的路径可能只是还没建，
        先尝试创建（帮建目录），建得出来就用；建不出来才回退 exe\projects。
@@ -290,6 +312,10 @@ int config_save(app_config_t *cfg, const char *path)
     cJSON_AddStringToObject(root, "language", cfg->language);
     cJSON_AddNumberToObject(root, "auto_save_interval", cfg->auto_save_interval);
     cJSON_AddNumberToObject(root, "enable_consistency_check", cfg->enable_consistency_check ? 1 : 0);
+    cJSON_AddStringToObject(root, "comfy_url", cfg->comfy_url ? cfg->comfy_url : "");
+    if (cfg->comfy_workflow_path && *cfg->comfy_workflow_path)
+        cJSON_AddStringToObject(root, "comfy_workflow_path", cfg->comfy_workflow_path);
+    cJSON_AddNumberToObject(root, "comfy_auto_bg", cfg->comfy_auto_bg ? 1 : 0);
     
     char *json_str = cJSON_Print(root);
     cJSON_Delete(root);

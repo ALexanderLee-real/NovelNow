@@ -11,6 +11,55 @@
 #include <direct.h>
 #include <io.h>      /* _commit：rename 之前把临时文件真正落盘 */
 #define mkdir(p) _mkdir(p)
+
+/* ===== UTF-8 路径兼容层 =====
+   中文路径（如「舞台图片」）在 GBK 代码页下走窄字符 fopen/mkdir 会建错名或直接失败，
+   文件 IO 一律经 UTF-8 -> 宽字符走 *_W API */
+static wchar_t *u8_to_wide(const char *s)
+{
+    if (!s) return NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+    if (!w) return NULL;
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    return w;
+}
+
+static char *wide_to_u8(const wchar_t *s)
+{
+    if (!s) return NULL;
+    int n = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
+    if (n <= 0) return NULL;
+    char *b = (char *)malloc((size_t)n);
+    if (!b) return NULL;
+    WideCharToMultiByte(CP_UTF8, 0, s, -1, b, n, NULL, NULL);
+    return b;
+}
+
+FILE *fopen_utf8(const char *path, const char *mode)
+{
+    wchar_t *wp = u8_to_wide(path), *wm = u8_to_wide(mode);
+    FILE *f = (wp && wm) ? _wfopen(wp, wm) : NULL;
+    free(wp); free(wm);
+    return f;
+}
+
+static int remove_u8(const char *path)
+{
+    wchar_t *w = u8_to_wide(path);
+    int r = w ? _wremove(w) : -1;
+    free(w);
+    return r;
+}
+
+static int mkdir_u8(const char *path)
+{
+    wchar_t *w = u8_to_wide(path);
+    int r = w ? _wmkdir(w) : -1;
+    free(w);
+    return r;
+}
 #else
 #include <unistd.h>
 #include <libgen.h>
@@ -102,7 +151,7 @@ char* strbuf_dup(strbuf_t *buf)
 char* read_file(const char *path)
 {
     if (!path) return NULL;
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen_utf8(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
@@ -125,7 +174,7 @@ char* read_file(const char *path)
 int write_file(const char *path, const char *content)
 {
     if (!path || !content) return -1;
-    FILE *f = fopen(path, "wb");
+    FILE *f = fopen_utf8(path, "wb");
     if (!f) return -1;
     size_t len = strlen(content);
     size_t written = fwrite(content, 1, len, f);
@@ -157,7 +206,7 @@ int write_file_atomic(const char *path, const char *content)
     snprintf(tmp, sizeof(tmp), "%s.%ld.%lu.tmp", path, (long)getpid(), seq);
 #endif
 
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = fopen_utf8(tmp, "wb");
     if (!f) return -1;
 
     size_t content_len = strlen(content);
@@ -169,14 +218,18 @@ int write_file_atomic(const char *path, const char *content)
     if (ok && _commit(_fileno(f)) != 0) ok = 0;
 #endif
     if (fclose(f) != 0) ok = 0;
-    if (!ok) { remove(tmp); return -1; }
+    if (!ok) { remove_u8(tmp); return -1; }
 
 #ifdef _WIN32
     /* 原子替换：MOVEFILE_WRITE_THROUGH 保证 rename 本身也落盘；
        失败时目标文件保持原样 */
-    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        remove(tmp);
-        return -1;
+    {
+        wchar_t *wtmp = u8_to_wide(tmp), *wpath = u8_to_wide(path);
+        BOOL moved = (wtmp && wpath)
+            ? MoveFileExW(wtmp, wpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+            : FALSE;
+        free(wtmp); free(wpath);
+        if (!moved) { remove_u8(tmp); return -1; }
     }
 #else
     remove(path);   /* POSIX rename 覆盖目标，失败则目标已丢失，故仅此分支非原子 */
@@ -196,19 +249,28 @@ int ensure_dir(const char *path)
     for (size_t i = 1; i < len; i++) {
         if (tmp[i] == '\\' || tmp[i] == '/') {
             tmp[i] = '\0';
-            mkdir(tmp);   /* 中间层已存在无所谓，最后一层的结果才是成败 */
+            mkdir_u8(tmp);   /* 中间层已存在无所谓，最后一层的结果才是成败 */
             tmp[i] = path[i];
         }
     }
     /* 必须检验最终 mkdir 的结果：失败当成功会让 config/project 的兜底检测全瞎 */
-    return (mkdir(tmp) == 0 || file_exists(tmp)) ? 0 : -1;
+    return (mkdir_u8(tmp) == 0 || file_exists(tmp)) ? 0 : -1;
 }
 
 int file_exists(const char *path)
 {
     if (!path) return 0;
+#ifdef _WIN32
+    {
+        wchar_t *w = u8_to_wide(path);
+        DWORD attr = w ? GetFileAttributesW(w) : INVALID_FILE_ATTRIBUTES;
+        free(w);
+        return (attr != INVALID_FILE_ATTRIBUTES);
+    }
+#else
     struct stat st;
     return (stat(path, &st) == 0);
+#endif
 }
 
 /* ============== 字符串工具 ============== */
@@ -330,17 +392,15 @@ char* path_join(const char *a, const char *b)
 char* get_exe_dir(void)
 {
 #ifdef _WIN32
-    char *buf = (char*)malloc(1024);
-    if (!buf) return NULL;
-    DWORD len = GetModuleFileNameA(NULL, buf, 1024);
-    if (len == 0) { free(buf); return NULL; }
-    /* 缓冲区不足时返回值等于 nSize 且内容被截断——算出的目录是错的，
-       静默返回错误目录比报错更危险，直接判失败 */
-    if (len >= 1024) { free(buf); return NULL; }
-    buf[len] = '\0';
-    char *last_slash = strrchr(buf, '\\');
-    if (last_slash) *last_slash = '\0';
-    return buf;
+    /* 宽字符取路径再转 UTF-8：ANSI 版在中文路径下返回本地代码页，拼出来是坏路径 */
+    wchar_t wbuf[1024];
+    wchar_t *last = NULL, *p;
+    DWORD len = GetModuleFileNameW(NULL, wbuf, 1024);
+    if (len == 0 || len >= 1024) return NULL;
+    wbuf[len] = L'\0';
+    for (p = wbuf; *p; p++) if (*p == L'\\' || *p == L'/') last = p;
+    if (last) *last = L'\0';
+    return wide_to_u8(wbuf);
 #else
     return str_dup(".");
 #endif

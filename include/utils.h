@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <stddef.h>
+#include <stdio.h>
 
 /* 动态字符串 */
 typedef struct {
@@ -37,6 +38,8 @@ int write_file(const char *path, const char *content);
 int write_file_atomic(const char *path, const char *content);
 int ensure_dir(const char *path);
 int file_exists(const char *path);
+/* UTF-8 路径安全 fopen：Windows 下走 _wfopen，「舞台图片」这类中文路径窄字符 fopen 会炸 */
+FILE *fopen_utf8(const char *path, const char *mode);
 
 /* 字符串工具 */
 char* str_dup(const char *s);

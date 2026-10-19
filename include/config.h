@@ -1,4 +1,4 @@
-﻿#ifndef NOVEL_AI_CONFIG_H
+#ifndef NOVEL_AI_CONFIG_H
 #define NOVEL_AI_CONFIG_H
 
 #ifdef __cplusplus
@@ -15,6 +15,9 @@ typedef struct {
     char *language;            /* 语言设置 */
     int auto_save_interval;    /* 自动保存间隔（秒） */
     int enable_consistency_check; /* 一致性检查开关：默认关闭（每章一次 AI 调用，token 消耗大） */
+    char *comfy_url;           /* ComfyUI 基地址（默认 http://127.0.0.1:8188），空=未配置 */
+    char *comfy_workflow_path; /* API 格式工作流 JSON 文件路径（含 {{PROMPT}} 占位符） */
+    int comfy_auto_bg;         /* 剧情分支自动生成下一节背景图开关 */
 } app_config_t;
 
 /* 加载/保存配置 */

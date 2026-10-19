@@ -321,16 +321,19 @@ html[data-theme="light"] .card::after { opacity: 0.5; }
   display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
   align-items: start;
 }
-.grid-split { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
-.grid-outline { display: grid; grid-template-columns: 250px 1fr 290px; gap: 16px; align-items: start; }
-.stack { display: flex; flex-direction: column; gap: 16px; }
+.grid-split { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
+.grid-outline { display: grid; grid-template-columns: 240px minmax(0, 1fr) 270px; gap: 16px; align-items: start; }
+.stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
-@media (max-width: 1200px) {
-  .grid-outline { grid-template-columns: 230px 1fr; }
-  .grid-outline .stack { grid-column: 1 / -1; }
+/* 断点按「内容区实际宽度」定：窗口宽度要扣掉侧栏约 240px + 内边距 60px。
+   1360 窗口 ≈ 1060 内容宽，三栏会把写作区挤到不足 500px——所以 1560 以下就该重排。 */
+@media (max-width: 1560px) {
+  .grid-outline { grid-template-columns: 230px minmax(0, 1fr); }
+  .grid-outline > .stack { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 1000px) {
-  .grid-2, .grid-split { grid-template-columns: 1fr; }
+  .grid-2, .grid-split, .grid-outline { grid-template-columns: 1fr; }
+  .grid-outline > .stack { grid-template-columns: 1fr; }
 }
 
 /* ============================================================
@@ -411,6 +414,10 @@ input[type="number"] { font-variant-numeric: tabular-nums; }
 
 .inline-fields { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .inline-fields.wrap { flex-wrap: wrap; }
+
+/* 工具栏（大纲页顶部）：两组动作分开放，组间给细分隔线，别挤成一坨 */
+.card.toolbar { gap: 12px; }
+.card.toolbar .inline-fields + .inline-fields { padding-top: 12px; border-top: 1px solid var(--border); }
 .row-between {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 12px; margin-top: 12px; flex-wrap: wrap;
@@ -790,25 +797,129 @@ html[data-theme="light"] .overlay { background: rgba(30, 34, 60, 0.28); }
  * 剧情分支（galgame 实时定制）
  * ============================================================ */
 .gal-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+@media (max-width: 1150px) { .gal-layout { grid-template-columns: 1fr; } }
 .gal-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .gal-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .gal-btns { display: flex; gap: 8px; flex-wrap: wrap; }
-.gal-stage { min-height: 420px; display: flex; flex-direction: column; }
-.gal-text {
-  flex: 1; min-height: 320px; max-height: 55vh; overflow-y: auto;
-  padding: 4px 6px; font-size: 15px; line-height: 1.95; letter-spacing: .01em;
+/* —— 游戏屏：深墨底，独立于浅/深主题 —— */
+.gal-stage {
+  position: relative; min-height: 480px; display: flex; flex-direction: column; gap: 14px;
+  padding: 18px 18px 16px;
+  background: radial-gradient(120% 90% at 50% 0%, #1a2033 0%, #101322 55%, #0b0e19 100%);
+  border: 1px solid rgba(124,140,255,.16); border-radius: 16px;
+  box-shadow: inset 0 0 60px rgba(0,0,0,.35), 0 10px 30px rgba(10,12,24,.28);
+  overflow: hidden;
 }
+.gal-stage::before { /* 暗角（有背景图时兼当压暗罩） */
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background: radial-gradient(120% 100% at 50% 50%, transparent 55%, rgba(0,0,0,.38) 100%);
+}
+/* 舞台背景（ComfyUI 生成的节点图） */
+.gal-stage.has-bg {
+  background-size: cover;
+  background-position: center;
+}
+.gal-stage.has-bg::before {
+  background: radial-gradient(120% 100% at 50% 50%, rgba(10,12,22,.30) 55%, rgba(6,8,16,.62) 100%);
+}
+.gal-stage-head {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.gal-stage-head h2 {
+  margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .22em;
+  color: rgba(214,220,255,.55); text-transform: uppercase;
+}
+/* 名牌（名前枠）：压在消息框左上的渐变小牌 */
+.gal-nametag {
+  display: inline-block; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 5px 16px; border-radius: 9px 9px 9px 2px;
+  background: linear-gradient(135deg, rgba(124,140,255,.92), rgba(158,120,255,.88));
+  color: #fff; font-size: 13px; font-weight: 600; letter-spacing: .06em;
+  box-shadow: 0 4px 16px rgba(124,140,255,.35);
+}
+/* 配图工坊 · 使用须知 */
+.comfy-note { margin: 0; padding-left: 20px; }
+.comfy-note li { margin: 6px 0; line-height: 1.75; }
+
+/* ---------- GalNow 子页切换（剧情分支 / 配图工坊） ---------- */
+.galnow-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  align-self: flex-start;
+}
+.galnow-tab {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  padding: 8px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--text-2);
+  background: transparent;
+  transition: all .16s ease;
+}
+.galnow-tab:hover { color: var(--accent); background: var(--accent-soft); }
+.galnow-tab.is-active { color: #fff; background: var(--accent); box-shadow: var(--shadow-card); }
+.galnow-pane { display: none; flex-direction: column; gap: 16px; }
+.galnow-pane.is-active { display: flex; }
+/* 消息框（メッセージ枠）：半透明深底 + 衬线正文（明朝体感） */
+.gal-text {
+  position: relative; z-index: 1;
+  flex: 1; min-height: 300px; max-height: 55vh; overflow-y: auto;
+  padding: 18px 22px 16px;
+  background: rgba(12, 15, 26, 0.66);
+  border: 1px solid rgba(160,175,255,.18); border-radius: 14px;
+  color: #e8ebff;
+  font-family: Georgia, 'Noto Serif SC', 'Source Han Serif SC', STSong, SimSun, serif;
+  font-size: 16px; line-height: 2.05; letter-spacing: .02em;
+  text-shadow: 0 1px 2px rgba(0,0,0,.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 8px 24px rgba(5,8,18,.35);
+}
+.gal-stage.has-bg .gal-text { background: rgba(12,15,26,.72); }
 .gal-text .gal-para { margin: 0 0 12px; text-indent: 2em; }
-.gal-text .gal-empty { color: var(--text-3); text-align: center; padding: 60px 0; text-indent: 0; }
-.gal-choices { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 2px 2px; border-top: 1px solid rgba(128,128,128,.18); }
-.gal-choice { flex: 1 1 220px; text-align: left; white-space: normal; line-height: 1.5; padding: 10px 14px; }
+.gal-text .gal-empty {
+  color: rgba(226,230,255,.55); text-align: center; padding: 60px 0; text-indent: 0;
+  font-family: inherit; font-style: italic;
+}
+/* 选项按钮（選択肢ボタン）：居中竖排、悬停发光抬起 */
+.gal-choices {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 2px 0 0;
+}
+.gal-choices .btn.gal-choice {
+  width: min(620px, 100%); margin: 0 auto; flex: none;
+  text-align: center; white-space: normal; line-height: 1.6; padding: 12px 20px;
+  font-size: 15px; letter-spacing: .04em; color: #eef0ff; cursor: pointer;
+  background: linear-gradient(180deg, rgba(38,44,72,.82), rgba(26,31,54,.88));
+  border: 1px solid rgba(150,165,255,.32); border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(8,10,22,.35);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease;
+}
+.gal-choices .btn.gal-choice:hover {
+  transform: translateY(-2px);
+  border-color: rgba(178,190,255,.7);
+  background: linear-gradient(180deg, rgba(56,64,104,.9), rgba(38,45,80,.92));
+  box-shadow: 0 10px 26px rgba(90,110,255,.32);
+}
+.gal-choices .btn.gal-choice:active { transform: translateY(0); }
 .gal-flags { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .gal-flag {
   display: flex; justify-content: space-between; align-items: center;
   padding: 8px 10px; border-radius: 8px; background: var(--surface-hi, rgba(128,128,128,.12));
   font-size: 12px;
 }
-.gal-flag b { font-size: 14px; color: var(--accent); }
+.gal-flag { border-left: 3px solid var(--accent); border-radius: 4px 10px 10px 4px; }
+.gal-flag:nth-child(1) { border-left-color: #f472a6; } /* 好感 · 玫瑰 */
+.gal-flag:nth-child(2) { border-left-color: #6aa9ff; } /* 信任 · 蓝 */
+.gal-flag:nth-child(3) { border-left-color: #58c98b; } /* 理智 · 绿 */
+.gal-flag:nth-child(4) { border-left-color: #f2c14e; } /* 真相碎片 · 金 */
+.gal-flag b { font-size: 15px; color: var(--accent); font-variant-numeric: tabular-nums; }
 .gal-bools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .gal-chip {
   display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
@@ -824,3 +935,37 @@ html[data-theme="light"] .overlay { background: rgba(30, 34, 60, 0.28); }
 .gal-node.is-cur { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
 .gal-node b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+
+/* ===== SinkNow 对话演出引擎 ===== */
+.gal-line {
+  line-height: 2.05;
+  white-space: pre-wrap;
+  min-height: 88px;
+}
+.gal-hint {
+  margin-top: 12px;
+  text-align: right;
+  font-size: 12px;
+  letter-spacing: .12em;
+  color: rgba(160, 175, 255, .62);
+  cursor: pointer;
+  user-select: none;
+  animation: galHintPulse 1.6s ease-in-out infinite;
+}
+.gal-caret {
+  color: rgba(124, 140, 255, .9);
+  animation: galBlink 1s steps(2) infinite;
+}
+.gal-typing {
+  color: rgba(200, 210, 255, .75);
+  letter-spacing: .18em;
+  animation: galHintPulse 1.4s ease-in-out infinite;
+  padding: 24px 0;
+  text-align: center;
+}
+.gal-text.is-narration .gal-line {
+  font-style: italic;
+  color: rgba(200, 210, 255, .82);
+}
+@keyframes galBlink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes galHintPulse { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }

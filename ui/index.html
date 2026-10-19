@@ -47,10 +47,10 @@
         <span>大纲 · 写作</span>
         <em class="nav-badge" data-badge="outline"></em>
       </button>
-      <button class="nav-item" data-page="gal">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v6a3 3 0 0 0 3 3h6a3 3 0 0 1 3 3v6"/><circle cx="6" cy="3" r="0"/><path d="M18 3v6"/><path d="M6 21v-3"/><circle cx="6" cy="3.5" r="1.5"/><circle cx="18" cy="3.5" r="1.5"/><circle cx="6" cy="20.5" r="1.5"/></svg>
-        <span>剧情分支</span>
-        <em class="nav-badge" data-badge="gal"></em>
+      <button class="nav-item" data-page="galnow">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v6a3 3 0 0 0 3 3h6a3 3 0 0 1 3 3v6"/><path d="M18 3v6"/><path d="M6 21v-3"/><circle cx="6" cy="3.5" r="1.5"/><circle cx="18" cy="3.5" r="1.5"/><circle cx="6" cy="20.5" r="1.5"/></svg>
+        <span>SinkNow</span>
+        <em class="nav-badge" data-badge="galnow"></em>
       </button>
       <button class="nav-item" data-page="settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -253,8 +253,15 @@
       </div>
     </section>
 
-    <!-- ---------- 剧情分支（galgame 实时定制） ---------- -->
-    <section class="page" data-page="gal">
+    <!-- ---------- GalNow（扩展模块：剧情分支 + 配图工坊，页内子页） ---------- -->
+    <section class="page" data-page="galnow">
+      <div class="galnow-tabs" id="galnowTabs">
+        <button class="galnow-tab is-active" data-pane="gal">剧情分支</button>
+        <button class="galnow-tab" data-pane="comfy">配图工坊</button>
+      </div>
+
+      <!-- 子页 1：剧情分支 -->
+      <div class="galnow-pane is-active" data-pane="gal">
       <header class="page-head">
         <h1>剧情分支</h1>
         <p>写下想法，实时生成剧情；到节点时做出选择，故事随你的选择分叉。</p>
@@ -284,9 +291,9 @@
           </div>
 
           <div class="card gal-stage" id="galStage">
-            <div class="card-head">
+            <div class="gal-stage-head">
               <h2>剧情演出</h2>
-              <span class="hint" id="galNodeInfo">—</span>
+              <span class="gal-nametag" id="galNodeInfo">—</span>
             </div>
             <div class="gal-text" id="galText">
               <div class="gal-empty">尚未开始。写下想法，点「生成企划并开局」。</div>
@@ -313,6 +320,63 @@
           </div>
         </div>
       </div>
+      </div><!-- /galnow-pane gal -->
+
+      <!-- 子页 2：配图工坊 -->
+      <div class="galnow-pane" data-pane="comfy">
+      <header class="page-head">
+        <h1>配图工坊</h1>
+        <p>剧情分支的场景背景图，交给本地 ComfyUI 提前生成。</p>
+      </header>
+
+      <div class="card">
+        <div class="card-head"><h2>使用须知</h2><span class="hint">先读这个</span></div>
+        <div class="form">
+          <ol class="comfy-note">
+            <li>需要<strong>本地预装并配置好 ComfyUI</strong>：本程序只负责把生图任务丢给你自己的 ComfyUI，不内置任何生图模型。</li>
+            <li>准备一份<strong>工作流 JSON</strong>（ComfyUI 里「导出 (API)」得到的 API 格式），并把<strong>正向提示词节点的文本里写上 <code>{{PROMPT}}</code></strong> 占位符——生成时会替换成剧情摘要。</li>
+            <li>默认连接 <code>http://127.0.0.1:8188</code>（ComfyUI 默认端口）。本程序只发起<strong>出站</strong>连接，不会占用或开放任何端口。</li>
+            <li>跨机器使用：ComfyUI 启动时加 <code>--listen 0.0.0.0</code> 并放行 8188/TCP，然后把下面的地址改成那台机器的 <code>http://IP:8188</code>。</li>
+            <li>生成的图存在程序目录 <code>舞台图片\</code> 下（每项目一个子文件夹，节点名.png），自动铺到剧情分支的舞台背景。</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h2>连接</h2><span class="hint" id="comfyStatus">未测试</span></div>
+          <div class="form">
+            <label class="field"><span>ComfyUI 地址</span><input type="text" id="comfyUrl" placeholder="http://127.0.0.1:8188"></label>
+            <div class="inline-fields wrap">
+              <button class="btn ghost" id="btnComfyTest">测试连接</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>工作流与自动生成</h2></div>
+          <div class="form">
+            <label class="field"><span>工作流 JSON 路径</span>
+              <div class="with-suffix">
+                <input type="text" id="comfyWfPath" placeholder="D:\comfy\my_workflow_api.json">
+                <button class="mini-btn" id="btnComfyPickWf" type="button">选择</button>
+              </div>
+            </label>
+            <label class="switch">
+              <input type="checkbox" id="comfyAutoBg">
+              <span class="track"><i></i></span>
+              <span class="switch-text">自动生成背景
+                <em>剧情推进到下一节之前，提前把下一节的背景图排进 ComfyUI 队列</em>
+              </span>
+            </label>
+            <div class="inline-fields wrap">
+              <button class="btn ghost" id="btnComfyGen">为当前节点生成背景</button>
+              <button class="btn primary" id="btnComfySave">保存配图设置</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div><!-- /galnow-pane comfy -->
     </section>
 
     <!-- ---------- 设置 ---------- -->
@@ -449,6 +513,7 @@
 <script src="state.js"></script>
 <script src="render.js"></script>
 <script src="gal.js"></script>
+<script src="comfy.js"></script>
 <script src="actions.js"></script>
 </body>
 </html>

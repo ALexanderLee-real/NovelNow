@@ -1,5 +1,6 @@
-﻿/* host_cmds.c - file dialogs + export/import + JSON command dispatch (split from host.c 2026-10-18, zero behavior change) */
+/* host_cmds.c - file dialogs + export/import + JSON command dispatch (split from host.c 2026-10-18, zero behavior change) */
 #include "host_internal.h"
+#include "comfy_api.h"
 
 
 /* ============================================================
@@ -479,6 +480,19 @@ void cmd_dispatch(cJSON *root)
     if (strcmp(cmd, "log") == 0) {
         const char *m = p_str(root, "msg", "");
         log_line("[UI] %s", m ? m : "(空)");
+        return;
+    }
+    /* 窗口标题随界面语言同步（前端 applyLanguage / initI18n 调 set_title） */
+    if (strcmp(cmd, "set_title") == 0) {
+        const char *t = p_str(root, "title", "");
+        if (t && *t) {
+            WCHAR *w = u8_to_w(t);
+            if (w) {
+                SetWindowTextW(g.hwnd, w);
+                free(w);
+            }
+        }
+        reply_ok(id, cmd, NULL);
         return;
     }
     if (strcmp(cmd, "answer") == 0) {
@@ -1213,6 +1227,143 @@ void cmd_dispatch(cJSON *root)
         }
         g.dirty = 1;
         reply_ok(id, cmd, NULL);
+        return;
+    }
+    if (strcmp(cmd, "comfy_test") == 0) {
+        /* 连通测试：不占忙闲位（可与 AI 任务并行），结果走 comfy_done 事件 */
+        const char *url = p_str(root, "url", NULL);
+        char *copy;
+        if (!url || !*url) url = (g.config && g.config->comfy_url) ? g.config->comfy_url : "";
+        copy = str_dup(url);
+        if (!copy) { reply_err(id, cmd, "内存不足"); return; }
+        if (!launch_thread(th_comfy_test, copy)) {
+            free(copy); reply_err(id, cmd, "无法启动线程"); return;
+        }
+        accepted = cJSON_CreateObject();
+        cJSON_AddBoolToObject(accepted, "accepted", 1);
+        reply_ok(id, cmd, accepted);
+        return;
+    }
+    if (strcmp(cmd, "comfy_gen") == 0) {
+        /* 生成配图：不占忙闲位。落盘 <projects_dir>/<proj_id>/舞台图片/<node>.png */
+        const char *node = p_str(root, "node", "");
+        const char *prompt = p_str(root, "prompt", "");
+        const char *wf_path = (g.config && g.config->comfy_workflow_path)
+                              ? g.config->comfy_workflow_path : NULL;
+        char *wf = NULL, *proj_dir = NULL, *img_dir = NULL, *out_path = NULL;
+        comfy_gen_task_t *t;
+        size_t i;
+        if (check_project(id, cmd)) return;
+        if (!node || !*node) { reply_err(id, cmd, "缺少 node（图片键）"); return; }
+        for (i = 0; node[i]; i++) {
+            char c = node[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                  (c >= 'A' && c <= 'Z') || c == '_' || c == '-')) {
+                reply_err(id, cmd, "node 只允许字母/数字/_/-"); return;
+            }
+        }
+        if (!prompt || !*prompt) { reply_err(id, cmd, "缺少 prompt（场景描述）"); return; }
+        if (!g.config || !g.config->comfy_url || !*g.config->comfy_url) {
+            reply_err(id, cmd, "ComfyUI 地址未配置（见「配图工坊」）"); return;
+        }
+        if (!wf_path || !*wf_path) {
+            reply_err(id, cmd, "工作流 JSON 未配置（见「配图工坊」）"); return;
+        }
+        wf = read_file(wf_path);
+        if (!wf || !*wf) {
+            free(wf); reply_err(id, cmd, "工作流文件读取失败"); return;
+        }
+        if (!strstr(wf, "{{PROMPT}}")) {
+            free(wf);
+            reply_err(id, cmd, "工作流里没有 {{PROMPT}} 占位符（正向提示词处写上它）");
+            return;
+        }
+        /* 图片库在程序目录的「舞台图片」下，每项目一个子文件夹防同名节点互踩 */
+        proj_dir = get_exe_dir();
+        img_dir = proj_dir ? path_join(proj_dir, "舞台图片") : NULL;
+        free(proj_dir);
+        if (!img_dir || ensure_dir(img_dir) != 0) {
+            free(wf); free(img_dir); reply_err(id, cmd, "无法创建图片目录"); return;
+        }
+        {
+            char *sub = path_join(img_dir, g.project->id);
+            free(img_dir);
+            img_dir = sub;
+        }
+        if (!img_dir || ensure_dir(img_dir) != 0) {
+            free(wf); free(img_dir); reply_err(id, cmd, "无法创建图片目录"); return;
+        }
+        {
+            char fname[320];
+            snprintf(fname, sizeof(fname), "%s.png", node);
+            out_path = path_join(img_dir, fname);
+        }
+        free(img_dir);
+        t = (comfy_gen_task_t *)calloc(1, sizeof(comfy_gen_task_t));
+        if (!t) {
+            free(wf); free(out_path); reply_err(id, cmd, "内存不足"); return;
+        }
+        t->node = str_dup(node);
+        t->url = str_dup(g.config->comfy_url);
+        t->workflow_json = wf;            /* 所有权移交 */
+        t->prompt = str_dup(prompt);
+        t->out_path = out_path;           /* 所有权移交 */
+        if (!t->node || !t->url || !t->prompt || !t->out_path) {
+            free(t->node); free(t->url); free(t->workflow_json);
+            free(t->prompt); free(t->out_path); free(t);
+            reply_err(id, cmd, "内存不足"); return;
+        }
+        if (!launch_thread(th_comfy_gen, t)) {
+            free(t->node); free(t->url); free(t->workflow_json);
+            free(t->prompt); free(t->out_path); free(t);
+            reply_err(id, cmd, "无法启动线程"); return;
+        }
+        accepted = cJSON_CreateObject();
+        cJSON_AddBoolToObject(accepted, "accepted", 1);
+        reply_ok(id, cmd, accepted);
+        return;
+    }
+    if (strcmp(cmd, "read_image") == 0) {
+        /* 同步读图：PNG -> data URL，前端当背景用。限 16MB。 */
+        const char *node = p_str(root, "node", "");
+        char *proj_dir, *img_dir, *path, *data;
+        size_t i;
+        if (check_project(id, cmd)) return;
+        if (!node || !*node) { reply_err(id, cmd, "缺少 node（图片键）"); return; }
+        for (i = 0; node[i]; i++) {
+            char c = node[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                  (c >= 'A' && c <= 'Z') || c == '_' || c == '-')) {
+                reply_err(id, cmd, "node 只允许字母/数字/_/-"); return;
+            }
+        }
+        proj_dir = get_exe_dir();
+        img_dir = proj_dir ? path_join(proj_dir, "舞台图片") : NULL;
+        free(proj_dir);
+        {
+            char *sub = img_dir ? path_join(img_dir, g.project->id) : NULL;
+            free(img_dir);
+            img_dir = sub;
+        }
+        {
+            char fname[320];
+            snprintf(fname, sizeof(fname), "%s.png", node);
+            path = img_dir ? path_join(img_dir, fname) : NULL;
+        }
+        free(img_dir);
+        if (!path) { reply_err(id, cmd, "内存不足"); return; }
+        data = image_data_url(path);
+        free(path);
+        if (!data) {
+            reply_err(id, cmd, "图片尚未生成或读取失败");
+            return;
+        }
+        {
+            cJSON *d = cJSON_CreateObject();
+            add_str(d, "data", data);
+            free(data);
+            reply_ok(id, cmd, d);
+        }
         return;
     }
     if (strcmp(cmd, "shutdown") == 0) {
