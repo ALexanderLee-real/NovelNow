@@ -54,7 +54,7 @@ typedef struct {
 #define NWM_TASK_DONE   (WM_APP + 10)  /* wParam = task_done_t* */
 #define NWM_ASK         (WM_APP + 11)  /* wParam = ask_t* */
 #define NWM_PROGRESS    (WM_APP + 12)  /* wParam = prog_t* */
-#define NWM_CHAPTER_DONE (WM_APP + 13) /* wParam = 章节索引 */
+#define NWM_CHAPTER_DONE (WM_APP + 13) /* wParam = ch_done_t*（快照，主线程用完释放） */
 #define NWM_POST        (WM_APP + 14)  /* wParam = WCHAR* 待投递报文（由本窗口释放）*/
 #define NWM_CHAPTER_DELTA (WM_APP + 15) /* wParam = delta_t* 流式增量 */
 
@@ -88,6 +88,17 @@ typedef struct {
     int index;      /* 正在生成的章节索引 */
     char *text;     /* 本次增量（堆上，主线程用完释放） */
 } delta_t;
+
+/* 逐章生成完成载荷（P0-C 快照）：th_step_write 在工作线程把章节字段拷贝好
+   再投递主线程，主线程绝不回读 g.project——用户答「重写本章」后工作线程
+   会立刻改写同一章，主线程回读 proj->chapters 就是 UAF。
+   title/content 堆上，主线程用完释放。 */
+typedef struct {
+    int   index;
+    int   word_count;
+    char *title;      /* 堆上 */
+    char *content;    /* 堆上 */
+} ch_done_t;
 
 /* from host.c:849-860 */
 typedef struct {

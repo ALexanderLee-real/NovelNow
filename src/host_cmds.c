@@ -464,7 +464,14 @@ void cmd_dispatch(cJSON *root)
     if (strcmp(cmd, "hello") == 0) { cmd_hello(id); return; }
     if (strcmp(cmd, "get_config") == 0) { reply_ok(id, cmd, config_json()); return; }
     if (strcmp(cmd, "list_projects") == 0) { reply_project_list(id, cmd); return; }
-    if (strcmp(cmd, "get_project") == 0) { reply_ok(id, cmd, project_meta_json(g.project)); return; }
+    /* 读命令也拦忙时：工作线程（th_*）正在改写 project——章节数组 realloc、
+       字符串 free/str_dup，主线程深读就是 UAF（P0-C）。任务结束后前端
+       handleTaskDone 会自动 refreshProject，数据不丢。 */
+    if (strcmp(cmd, "get_project") == 0) {
+        if (require_idle_reply(id, cmd, "读取项目")) return;
+        reply_ok(id, cmd, project_meta_json(g.project));
+        return;
+    }
     if (strcmp(cmd, "ping") == 0) {
         cJSON *d = cJSON_CreateObject();
         cJSON_AddNumberToObject(d, "tick", (double)GetTickCount());
@@ -524,6 +531,8 @@ void cmd_dispatch(cJSON *root)
     }
     if (strcmp(cmd, "get_chapter") == 0) {
         int idx = p_int(root, "index", -1);
+        /* P0-C：忙时工作线程可能正在改写章节数组，深读会踩 UAF */
+        if (require_idle_reply(id, cmd, "读取章节")) return;
         if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
             reply_err(id, cmd, "章节不存在");
             return;
@@ -543,6 +552,8 @@ void cmd_dispatch(cJSON *root)
     }
     if (strcmp(cmd, "get_plan") == 0) {
         int idx = p_int(root, "index", -1);
+        /* P0-C：同 get_chapter，忙时禁止深读 plans 数组 */
+        if (require_idle_reply(id, cmd, "读取方案")) return;
         if (!g.project || idx < 0 || idx >= g.project->plan_count) {
             reply_err(id, cmd, "方案不存在");
             return;
@@ -558,6 +569,8 @@ void cmd_dispatch(cJSON *root)
         }
         return;
     }
+    /* 只写 app 结构体里的 int 游标，不碰 project；读写都在 UI 主线程，
+       与工作线程无争用——不用拦忙时（P0-C 复查结论） */
     if (strcmp(cmd, "set_selected_chapter") == 0) {
         int idx = p_int(root, "index", -1);
         g.selected_chapter = idx;

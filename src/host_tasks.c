@@ -266,8 +266,23 @@ DWORD WINAPI th_step_write(LPVOID param)
             return 0;
         }
 
-        /* 本章完成：让主线程刷新列表并把正文推给前端供审阅 */
-        if (g_hwnd && !g_shuttingDown) PostMessageW(g_hwnd, NWM_CHAPTER_DONE, (WPARAM)i, 0);
+        /* 本章完成：让主线程刷新列表并把正文推给前端供审阅。
+           投快照不投索引（P0-C）：主线程处理消息有滞后，用户答「重写本章」
+           后本线程立刻改写 chapters[i]，主线程回读 proj->chapters 就是 UAF。 */
+        if (g_hwnd && !g_shuttingDown) {
+            const chapter_t *src = &proj->chapters[i];
+            ch_done_t *cd = (ch_done_t *)calloc(1, sizeof(ch_done_t));
+            if (cd) {
+                cd->index = i;
+                cd->word_count = src->word_count;
+                cd->title = src->title ? str_dup(src->title) : NULL;
+                cd->content = src->content ? str_dup(src->content) : NULL;
+                if (!PostMessageW(g_hwnd, NWM_CHAPTER_DONE, (WPARAM)cd, 0)) {
+                    /* 窗口已销毁：快照没人消费，就地释放防泄漏 */
+                    free(cd->title); free(cd->content); free(cd);
+                }
+            }
+        }
 
         if (i + 1 >= proj->chapter_count) {
             post_task_done("step_write", 0, 1, "逐章生成完成：全部章节已写完", -1);

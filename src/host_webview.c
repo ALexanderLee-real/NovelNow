@@ -889,20 +889,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
 
-    /* ---- 逐章生成：某章完成 ---- */
+    /* ---- 逐章生成：某章完成 ----
+       载荷是 ch_done_t 快照（P0-C）：绝不回读 g.project——「重写本章」被回答后
+       工作线程立刻改写同一章，回读就是 UAF。push_project() 保留：本消息先于
+       NWM_ASK 投递（同线程 FIFO），处理它时工作线程还阻塞在 bridge_ask，
+       project 处于静止，深读安全。 */
     case NWM_CHAPTER_DONE:
         {
-            int idx = (int)wp;
-            if (g.project && idx >= 0 && idx < g.project->chapter_count) {
-                chapter_t *c = &g.project->chapters[idx];
+            ch_done_t *cd = (ch_done_t *)wp;
+            if (cd) {
                 cJSON *d = cJSON_CreateObject();
-                cJSON_AddNumberToObject(d, "index", idx);
-                add_str(d, "title", c->title);
-                add_str(d, "content", c->content);
-                cJSON_AddNumberToObject(d, "wordCount", c->word_count);
+                cJSON_AddNumberToObject(d, "index", cd->index);
+                add_str(d, "title", cd->title);
+                add_str(d, "content", cd->content);
+                cJSON_AddNumberToObject(d, "wordCount", cd->word_count);
                 push_event("chapter_written", d);
                 push_project();
                 g.dirty = 1;
+                free(cd->title);
+                free(cd->content);
+                free(cd);
             }
         }
         return 0;
