@@ -1,4 +1,4 @@
-﻿/* ai_api.c - public API: config/response/retry/abort/chat/models (2026-10-18 split from legacy ai_api.c, zero behavior change) */
+/* ai_api.c - public API: config/response/retry/abort/chat/models (2026-10-18 split from legacy ai_api.c, zero behavior change) */
 #include "ai_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,7 +85,9 @@ void ai_abort_current(void)
     if (g_active_req) {
         g_aborted_req = g_active_req;
         InternetCloseHandle(g_active_req);
-        g_active_req = NULL;   /* 请求线程稍后清理时会再关一次，重复关闭安全 */
+        g_active_req = NULL;   /* 请求线程退出时认出 g_aborted_req==自己的句柄就不再关
+                                 （见 ai_http.c 防重关逻辑）：句柄值可能已被新请求复用，
+                                 二次关闭会误杀他人的连接 */
     }
     LeaveCriticalSection(&g_abort_cs);
 }

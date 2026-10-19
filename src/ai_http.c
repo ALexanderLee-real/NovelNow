@@ -1,4 +1,4 @@
-﻿/* ai_http.c - URL parsing and HTTP request execution (2026-10-18 split from legacy ai_api.c, zero behavior change) */
+/* ai_http.c - URL parsing and HTTP request execution (2026-10-18 split from legacy ai_api.c, zero behavior change) */
 #include "ai_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,19 +52,22 @@ static int parse_url(const char *url, url_parts_t *parts)
            都会静默连到错误端口（P1-⑮） */
         {
             const char *pv = port_start + 1;
-            if (!*pv) return 0;
-            for (const char *d = pv; *d; d++) if (*d < '0' || *d > '9') return 0;
-            if (parts->port < 1 || parts->port > 65535) return 0;
+            /* 失败必须 return -1（parse_url 约定 0=成功）：早前这里 return 0
+               把非法端口当解析成功（P1-⑮ 的修复没修好） */
+            if (!*pv) return -1;
+            for (const char *d = pv; *d; d++) if (*d < '0' || *d > '9') return -1;
+            if (parts->port < 1 || parts->port > 65535) return -1;
         }
     } else {
         if (strcmp(parts->scheme, "https") == 0) parts->port = 443;
         else parts->port = 80;
     }
     
-    /* path */
+    /* path：超长直接拒绝，不静默截断——截断会把请求打到错误的接口上 */
     if (path_start) {
-        strncpy(parts->path, path_start, sizeof(parts->path) - 1);
-        parts->path[sizeof(parts->path) - 1] = '\0';
+        size_t plen = strlen(path_start);
+        if (plen >= sizeof(parts->path)) return -1;
+        memcpy(parts->path, path_start, plen + 1);
     } else {
         strcpy(parts->path, "/");
     }
@@ -191,6 +194,17 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
     g_active_req = hReq;
     LeaveCriticalSection(&g_abort_cs);
 
+    /* 状态码先于读体查询：非 2xx 的错误体绝不能喂给 on_body——SSE 解析器
+       会把它收进 sse.content，让「content 为空才重试」的重试判定失效（P1） */
+    char status_code[32] = {0};
+    DWORD status_len = sizeof(status_code);
+    if (!HttpQueryInfoA(hReq, HTTP_QUERY_STATUS_CODE, status_code, &status_len, NULL)) {
+        /* 不检查就会拿 0 当状态码，报出误导的 "HTTP 0"（P1-⑬） */
+        snprintf(status_code, sizeof(status_code), "0");
+    }
+    int code = atoi(status_code);
+    int ok_status = (code >= 200 && code < 300);
+
     /* Read response */
     http_buffer_t resp_buf;
     http_buf_init(&resp_buf);
@@ -209,7 +223,7 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
         }
         if (bytes_read == 0) break;
         http_buf_append(&resp_buf, chunk, bytes_read);
-        if (on_body) on_body(chunk, bytes_read, ud);
+        if (on_body && ok_status) on_body(chunk, bytes_read, ud);
     }
     /* 注销在途句柄（真正的关闭统一放请求线程，重复关闭安全） */
     EnterCriticalSection(&g_abort_cs);
@@ -238,15 +252,8 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
         return NULL;
     }
 
-    /* Check status code */
-    char status_code[32] = {0};
-    DWORD status_len = sizeof(status_code);
-    if (!HttpQueryInfoA(hReq, HTTP_QUERY_STATUS_CODE, status_code, &status_len, NULL)) {
-        /* 不检查就会拿 0 当状态码，报出误导的 "HTTP 0"（P1-⑬） */
-        snprintf(status_code, sizeof(status_code), "0");
-    }
-    int code = atoi(status_code);
-    if (code < 200 || code >= 300) {
+    /* 状态码已在读体前取好（见上），这里直接判 */
+    if (!ok_status) {
         if (err_out) {
             char *err_msg = (char*)malloc(512 + resp_buf.length);
             if (err_msg) {

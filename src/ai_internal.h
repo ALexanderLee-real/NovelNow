@@ -1,4 +1,4 @@
-﻿/* ai_internal.h - internal sharing across ai_http.c / ai_sse.c / ai_api.c
+/* ai_internal.h - internal sharing across ai_http.c / ai_sse.c / ai_api.c
    (2026-10-18 structural split from the legacy ai_api.c monolith, zero behavior change).
    Not for host/engine consumers: the public surface stays in ai_api.h. */
 #ifndef AI_INTERNAL_H
@@ -58,7 +58,10 @@ char* resolve_chat_endpoint(const char *api_url);
 void sse_reset(sse_ctx_t *s);
 void sse_on_chunk(const char *data, size_t len, void *ud);
 
-/* ---- ai_api.c (abort channel, read by request code) ---- */
+/* ---- ai_api.c (abort channel, read by request code) ----
+   不变量：任何走 ai_http 的请求必持忙位（try_begin_task），全局同时只有
+   一个在途请求（comfy 走自己的 chttp_do 栈、不进注册表），所以
+   g_active_req/g_aborted_req 单槽够用——新增并发调用点前先推翻这个前提。 */
 void abort_lock(void);
 int ai_aborted(void);
 void abort_err(char **err_out);
