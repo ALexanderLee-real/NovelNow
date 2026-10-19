@@ -62,6 +62,7 @@ desktop.ini
 bin/
 HANDOFF.md
 接手计划书.md
+PROGRESS.md
 免费模型API注册指南.md
 
 # 拆分期临时产物（原文件备份/编译输出），不进仓库
