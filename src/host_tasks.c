@@ -312,6 +312,8 @@ DWORD WINAPI th_check_consistency(LPVOID param)
     double score;
     char buf[128];
     score = engine_check_consistency(g.engine, g.project, idx);
+    /* 取消不是失败：-2.0 是 ENGINE_CANCELLED 的 double 形态（P1 取消语义） */
+    if (score == (double)ENGINE_CANCELLED) { post_task_done("check_consistency", ENGINE_CANCELLED, 0, "已取消", idx); return 0; }
     if (score < 0) { post_task_done("check_consistency", -1, 0, engine_err(), idx); return 0; }
     snprintf(buf, sizeof(buf), "一致性评分：%.2f", score);
     post_task_done("check_consistency", 0, 1, buf, idx);

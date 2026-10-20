@@ -1,4 +1,4 @@
-﻿/* engine_parse.c - parsers for AI responses, split from engine.c (2026-10-18, zero behavior change) */
+/* engine_parse.c - parsers for AI responses, split from engine.c (2026-10-18, zero behavior change) */
 #include "engine_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +40,8 @@ int parse_numbered_list(const char *text, char **titles, char **descriptions, in
         const char *desc_start = NULL;
         while (*p && *p != '\n' && *p != '\r') {
             if (*p == '-' && *(p+1) == '-') { p += 2; }
+            else if (U8_EQ(p, "——")) { p += 6; }   /* 中文双破折号 U+2014×2，模型爱用（P1） */
+            else if (U8_EQ(p, "—")) { p += 3; }    /* 中文单破折号 U+2014（双的必须先判） */
             else if (*p == ':') { p++; }
             else if (U8_EQ(p, "：")) { p += 3; }
             else { p++; continue; }
@@ -51,9 +53,13 @@ int parse_numbered_list(const char *text, char **titles, char **descriptions, in
         /* 提取标题 */
         size_t title_len = (desc_start ? (size_t)(desc_start - title_start) : (size_t)(p - title_start));
         /* 去掉尾部空格和破折号 */
-        while (title_len > 0 && (title_start[title_len-1] == ' ' || 
+        while (title_len > 0 && (title_start[title_len-1] == ' ' ||
                title_start[title_len-1] == '\t' || title_start[title_len-1] == '-')) {
             title_len--;
+        }
+        /* 尾部中文破折号也剥掉（「方向名——」没带描述的情况） */
+        while (title_len >= 3 && memcmp(title_start + title_len - 3, "—", 3) == 0) {
+            title_len -= 3;
         }
         /* 超长按 UTF-8 边界截断，而不是整条丢弃（丢弃会静默丢失内容） */
         if (title_len > 255) title_len = utf8_safe_len(title_start, 255);

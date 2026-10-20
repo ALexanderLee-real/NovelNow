@@ -13,6 +13,15 @@ int is_cancelled(engine_state_t *state)
 {
     return state ? get_engine(state)->cancel : 0;
 }
+
+/* AI 调用失败统一处理：用户取消不是失败——返回 ENGINE_CANCELLED(-2)，
+   否则 host_tasks 的 `if (r == ENGINE_CANCELLED) 报已取消` 永远判不到，
+   点了取消还弹「AI request failed」（P1 取消语义混）。resp 的销毁归调用方。 */
+static int ai_fail_or_cancel(engine_state_t *state, ai_response_t *resp)
+{
+    set_error(state, resp && resp->error ? resp->error : "AI request failed");
+    return is_cancelled(state) ? ENGINE_CANCELLED : -1;
+}
 /* ============== 辅助函数 ============== */
 
 void report_progress(engine_state_t *state, const char *stage,
@@ -154,11 +163,11 @@ int engine_generate_directions(engine_state_t *state, novel_project_t *proj,
         strbuf_destroy(prompt);
         
         if (!resp || !resp->success) {
-            set_error(state, resp && resp->error ? resp->error : "AI request failed");
+            int fret = ai_fail_or_cancel(state, resp);
             if (resp) ai_response_destroy(resp);
             free(current_idea);
             state->is_running = 0;
-            return -1;
+            return fret;
         }
         
         report_progress(state, "创意发散", step++, total_steps, 
@@ -181,7 +190,9 @@ int engine_generate_directions(engine_state_t *state, novel_project_t *proj,
             }
         }
         
-        /* 更新当前创意（用于下一轮迭代：取最佳方向深化） */
+        /* 更新当前创意（用于下一轮迭代：取第一个方向当种子深化——模型按推荐度排序，
+           [0] 即首选；没有评分机制，别当"最佳"看）。中间轮的方向有意丢弃（蒸馏），
+           只留最后一轮给用户选。 */
         if (iter < iterations - 1 && proj->direction_count > 0) {
             free(current_idea);
             strbuf_t *buf = strbuf_create(1024);
@@ -190,10 +201,7 @@ int engine_generate_directions(engine_state_t *state, novel_project_t *proj,
             strbuf_append(buf, proj->directions[0].description);
             current_idea = strbuf_dup(buf);
             strbuf_destroy(buf);
-            /* 清空上一轮的方向，为新一轮做准备 */
-            if (iter < iterations - 1) {
-                project_clear_directions(proj);
-            }
+            project_clear_directions(proj);
         }
         
         ai_response_destroy(resp);
@@ -254,10 +262,10 @@ int engine_generate_plans(engine_state_t *state, novel_project_t *proj, int plan
     strbuf_destroy(prompt);
     
     if (!resp || !resp->success) {
-        set_error(state, resp && resp->error ? resp->error : "AI request failed");
+        int fret = ai_fail_or_cancel(state, resp);
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return -1;
+        return fret;
     }
     
     report_progress(state, "方案生成", 1, 2, "正在解析方案...");
@@ -442,10 +450,10 @@ int engine_expand_outline(engine_state_t *state, novel_project_t *proj, int chap
     strbuf_destroy(prompt);
     
     if (!resp || !resp->success) {
-        set_error(state, resp && resp->error ? resp->error : "AI request failed");
+        int fret = ai_fail_or_cancel(state, resp);
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return -1;
+        return fret;
     }
     
     report_progress(state, "大纲细化", 1, 3, "正在解析章节...");
@@ -731,10 +739,10 @@ int engine_expand_chapter(engine_state_t *state, novel_project_t *proj,
         free(system_prompt);
 
         if (!resp || !resp->success) {
-            set_error(state, resp && resp->error ? resp->error : "AI request failed");
+            int fret = ai_fail_or_cancel(state, resp);
             if (resp) ai_response_destroy(resp);
             state->is_running = 0;
-            return -1;
+            return fret;
         }
 
         /* 双保险：即使响应层漏检，也绝不把空内容写进章节 */
@@ -775,10 +783,12 @@ int engine_expand_all_chapters(engine_state_t *state, novel_project_t *proj,
     for (int i = 0; i < total; i++) {
         CANCEL_CHECK(state);
         /* 已写完的章默认跳过：批量扩写不该把成品推倒重写（白烧 token 还毁稿）。
-           force=1 时无条件覆盖（UI「全部重写」按钮）。字数按 3 字节/汉字估算。 */
+           force=1 时无条件覆盖（UI「全部重写」按钮）。
+           字数口径跟 word_count 一致用 utf8_char_count——旧版按「3 字节/汉字」
+           拿字节长度估，英文 1 字节/字永远够不到 90% 阈值，force=0 时英文稿永不补写（P1）。 */
         if (!force && proj->chapters[i].content && *proj->chapters[i].content) {
-            size_t len = strlen(proj->chapters[i].content);
-            if (target_words > 0 && len >= (size_t)target_words * 3 / 10 * 9) {
+            size_t chars = utf8_char_count(proj->chapters[i].content);
+            if (target_words > 0 && chars >= (size_t)target_words * 9 / 10) {
                 skipped++;
                 continue;
             }
@@ -802,10 +812,10 @@ int engine_expand_all_chapters(engine_state_t *state, novel_project_t *proj,
 
 double engine_check_consistency(engine_state_t *state, novel_project_t *proj, int chapter_index)
 {
-    if (!state || !proj) return 0.0;
+    if (!state || !proj) return -1.0;   /* 参数错=失败哨兵：0.0 会被当真实评分"完全不一致"（P1） */
     
     chapter_t *ch = project_get_chapter(proj, chapter_index);
-    if (!ch || !ch->content || !*ch->content) return 0.0;
+    if (!ch || !ch->content || !*ch->content) return -1.0;   /* 没正文不能打 0 分装成功，报错才诚实（P1） */
     
     state->is_running = 1;
     report_progress(state, "一致性检查", 0, 2, ch->title);
@@ -842,10 +852,10 @@ double engine_check_consistency(engine_state_t *state, novel_project_t *proj, in
     strbuf_destroy(prompt);
     
     if (!resp || !resp->success) {
-        set_error(state, resp && resp->error ? resp->error : "AI request failed");
+        int fret = ai_fail_or_cancel(state, resp);
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return -1.0;   /* 失败必须负数：0.0 会被当真实评分"完全不一致" */
+        return (fret == ENGINE_CANCELLED) ? (double)ENGINE_CANCELLED : -1.0;   /* 失败必须负数：0.0 会被当真实评分"完全不一致" */
     }
     
     /* 解析评分 */
@@ -1062,10 +1072,10 @@ int engine_generate_characters(engine_state_t *state, novel_project_t *proj)
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {
-        set_error(state, resp && resp->error ? resp->error : "AI request failed");
+        int fret = ai_fail_or_cancel(state, resp);
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return -1;
+        return fret;
     }
 
     /* 先确认能解析出人物再覆盖，避免格式异常时清空现有设定 */
@@ -1127,10 +1137,10 @@ int engine_summarize_worldview(engine_state_t *state, novel_project_t *proj)
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {
-        set_error(state, resp && resp->error ? resp->error : "AI request failed");
+        int fret = ai_fail_or_cancel(state, resp);
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return -1;
+        return fret;
     }
 
     report_progress(state, "世界观总结", 3, 3, "正在写入世界观...");
@@ -1180,10 +1190,10 @@ int engine_check_finale(engine_state_t *state, novel_project_t *proj)
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {
-        set_error(state, resp && resp->error ? resp->error : "AI request failed");
+        int fret = ai_fail_or_cancel(state, resp);
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return -1;
+        return fret;
     }
 
     report_progress(state, "伏笔校验", 3, 3, "正在写入校验报告...");
@@ -1236,10 +1246,10 @@ int engine_analyze_text(engine_state_t *state, novel_project_t *proj, const char
     strbuf_destroy(prompt);
 
     if (!resp || !resp->success) {
-        set_error(state, resp && resp->error ? resp->error : "AI request failed");
+        int fret = ai_fail_or_cancel(state, resp);
         if (resp) ai_response_destroy(resp);
         state->is_running = 0;
-        return -1;
+        return fret;
     }
 
     report_progress(state, "文本分析", 3, 3, "正在写入分析结果...");

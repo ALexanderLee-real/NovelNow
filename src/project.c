@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _MSC_VER
+#include <intrin.h>   /* make_safe_id 的序号要用原子自增：MSVC /std:c11 不带 C11 atomics（<stdatomic.h> 直接 #error），用内建 */
+#endif
 
 /* ============== 辅助：安全字符串拷贝 ============== */
 
@@ -127,6 +130,12 @@ void project_add_direction(novel_project_t *proj, const char *title, const char 
         if (!new_arr) return;
         memset(new_arr + proj->direction_count, 0, 
                (new_cap - proj->direction_count) * sizeof(direction_t));
+        /* realloc 可能搬内存：selected_direction 是裸指针，必须按偏移迁移到新基址，
+           否则后面 project_build_context_summary 深读它就是 UAF（P1） */
+        if (proj->selected_direction) {
+            ptrdiff_t sel = proj->selected_direction - proj->directions;
+            proj->selected_direction = &new_arr[sel];
+        }
         proj->directions = new_arr;
         proj->direction_capacity = new_cap;
     }
@@ -169,6 +178,11 @@ void project_add_plan(novel_project_t *proj, const char *title, const char *syno
         if (!new_arr) return;
         memset(new_arr + proj->plan_count, 0,
                (new_cap - proj->plan_count) * sizeof(novel_plan_t));
+        /* 同 project_add_direction：realloc 搬家后裸指针按偏移迁移（P1） */
+        if (proj->selected_plan) {
+            ptrdiff_t sel = proj->selected_plan - proj->plans;
+            proj->selected_plan = &new_arr[sel];
+        }
         proj->plans = new_arr;
         proj->plan_capacity = new_cap;
     }
@@ -531,6 +545,7 @@ char* project_build_memory_block(novel_project_t *proj, int upto_chapter)
         char head[128];
         snprintf(head, sizeof(head), "第%d章《%s》：", i + 1,
                  (c->title && *c->title) ? c->title : "");
+        head[utf8_safe_len(head, strlen(head))] = '\0';   /* snprintf 按字节截断会切半个汉字（P1），修回字符边界 */
         strbuf_append(buf, head);
         strbuf_append(buf, c->summary);
         strbuf_append(buf, "\n");
@@ -590,6 +605,7 @@ char* project_build_full_text(novel_project_t *proj, size_t max_bytes)
 
         snprintf(head, sizeof(head), "\n【第%d章 %s】\n", i + 1,
                  (ch->title && *ch->title) ? ch->title : "");
+        head[utf8_safe_len(head, strlen(head))] = '\0';   /* 同上：防 UTF-8 半字截断（P1） */
         head_len = strlen(head);
         if (used + head_len < max_bytes) {
             strbuf_append(buf, head);
@@ -712,11 +728,17 @@ static int is_safe_id(const char *id)
    否则以 id 命名的文件/目录会互相覆盖 */
 static char* make_safe_id(void)
 {
-    static unsigned seq = 0;
+    static volatile unsigned long seq = 0;   /* project_save 会被 th_* 工作线程调用，非原子 ++ 会撞 id（P1） */
     char *ts = get_timestamp_str();
     char buf[64];
+    unsigned n;
     if (!ts) return str_dup("project");
-    snprintf(buf, sizeof(buf), "%s_%u", ts, (unsigned)++seq);
+#ifdef _MSC_VER
+    n = (unsigned)_InterlockedIncrement((volatile long*)&seq);
+#else
+    n = (unsigned)__sync_add_and_fetch(&seq, 1);
+#endif
+    snprintf(buf, sizeof(buf), "%s_%u", ts, n);
     free(ts);
     return str_dup(buf);
 }
