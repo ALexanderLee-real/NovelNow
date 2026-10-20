@@ -1,4 +1,4 @@
-﻿/* host_bridge.c - globals + encoding/log/json/push/reply/busy + task_done + launch_thread (split from host.c 2026-10-18, zero behavior change) */
+/* host_bridge.c - globals + encoding/log/json/push/reply/busy + task_done + launch_thread (split from host.c 2026-10-18, zero behavior change) */
 #include "host_internal.h"
 
 /* ---- global state definitions ---- */
@@ -68,16 +68,20 @@ void log_line(const char *fmt, ...)
     va_list ap;
     char path[2048];
     char msg[1024];
+    static SRWLOCK s_logLock = SRWLOCK_INIT;   /* 工作线程也打日志：并发 fopen/fwrite 同一文件会互相踩行（P1） */
 
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
 
     snprintf(path, sizeof(path), "%ls\\webui.log", g_exeDir);
+    AcquireSRWLockExclusive(&s_logLock);
     f = fopen(path, "a");
-    if (!f) return;
-    fprintf(f, "[%8lu] %s\r\n", (unsigned long)GetTickCount(), msg);
-    fclose(f);
+    if (f) {
+        fprintf(f, "[%8lu] %s\r\n", (unsigned long)GetTickCount(), msg);
+        fclose(f);
+    }
+    ReleaseSRWLockExclusive(&s_logLock);
 }
 
 /* ============================================================
@@ -209,13 +213,12 @@ void post_json_root(cJSON *root)
     /* 投递前记一条「类型 + 序号」。
        ★ 绝不打印报文正文：hello 回执里含 API Key，写进日志等于泄露。 */
     {
-        static int n = 0;
-        if (n < 12) {
+        static volatile LONG n = 0;   /* 工作线程也走这里，静态 int++ 非原子（P1） */
+        if (InterlockedIncrement(&n) <= 12) {
             const char *ty = j_str(root, "type", "?");
             const char *nm = j_str(root, "name", NULL);
             if (!nm) nm = j_str(root, "cmd", NULL);
-            n++;
-            log_line("--> post #%d %s %s", n, ty, nm ? nm : "");
+            log_line("--> post #%ld %s %s", (long)n, ty, nm ? nm : "");
         }
     }
 

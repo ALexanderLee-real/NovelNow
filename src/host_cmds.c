@@ -664,9 +664,15 @@ void cmd_dispatch(cJSON *root)
         if (path && *path) {
             WCHAR *w = u8_to_w(path);
             if (w) {
-                WCHAR args[MAX_PATH + 16];
-                swprintf(args, MAX_PATH + 16, L"/select,\"%s\"", w);
-                ShellExecuteW(g.hwnd, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+                /* 参数缓冲必须装得下 /select,"<path>"：路径超长时 swprintf 返回负数，
+                   不能拿残缺参数去开 explorer（P1 截断）。装不下就退化为打开所在目录。 */
+                WCHAR args[MAX_PATH * 2 + 32];
+                int n = swprintf(args, sizeof(args) / sizeof(args[0]), L"/select,\"%s\"", w);
+                if (n > 0) {
+                    ShellExecuteW(g.hwnd, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+                } else {
+                    ShellExecuteW(g.hwnd, L"open", L"explorer.exe", w, NULL, SW_SHOWNORMAL);
+                }
                 free(w);
             }
         }
@@ -1258,7 +1264,9 @@ void cmd_dispatch(cJSON *root)
         return;
     }
     if (strcmp(cmd, "comfy_gen") == 0) {
-        /* 生成配图：不占忙闲位。落盘 <projects_dir>/<proj_id>/舞台图片/<node>.png */
+        /* 生成配图：不占忙闲位。落盘 <exe_dir>/舞台图片/<proj_id>/<node>.png
+           （目录故意在程序目录而非 projects_dir——沿用手账 10-20 决定；
+           装进 Program Files 时可能没写权限，ensure_dir 失败会报「无法创建图片目录」） */
         const char *node = p_str(root, "node", "");
         const char *prompt = p_str(root, "prompt", "");
         const char *wf_path = (g.config && g.config->comfy_workflow_path)

@@ -109,6 +109,9 @@ int bridge_ask(const char *text)
             }
         }
     }
+    /* 等待收场（用户答复/超时/取消唤回都走这里）：置 dead，让还没被处理的
+       NWM_ASK 知道别再推弹窗——否则用户点完「取消」又蹦出个无人接收的死弹窗（P1） */
+    a->dead = 1;
     ask_unregister(a);
     {
         int ans = a->answer;

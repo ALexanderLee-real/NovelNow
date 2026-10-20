@@ -71,6 +71,7 @@ typedef struct ask_s {
     HANDLE done;      /* 手动复位事件 */
     int    answer;    /* 1=是 2=否 3=取消 */
     volatile LONG refs;  /* 引用计数：工作线程持有 1 个 + 每条已投递消息持有 1 个 */
+    volatile LONG dead;  /* 等待已收场（答复/超时/唤回）：迟到的 NWM_ASK 不许再推弹窗（P1 死弹窗） */
     struct ask_s *next;
     char   text[1];   /* 柔性数组（标题由前端统一渲染） */
 } ask_t;

@@ -847,11 +847,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         {
             ask_t *a = (ask_t *)wp;
             if (a) {
-                cJSON *d = cJSON_CreateObject();
-                cJSON_AddNumberToObject(d, "askId", a->id);
-                add_str(d, "text", a->text);
-                add_str(d, "kind", "chapter_review");
-                push_event("ask", d);
+                /* 询问可能在本消息被处理前就已收场（用户点「取消」→ask_release_all
+                   唤回、或等待超时）：再推弹窗就是「死弹窗」——推出来也没人接收
+                   答复。dead=1 即等待已结束，只还消息那份引用，不推事件（P1）。 */
+                if (InterlockedCompareExchange(&a->dead, 0, 0)) {
+                    log_line("-- 询问 #%d 已收场，跳过迟到的弹窗", a->id);
+                } else {
+                    cJSON *d = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(d, "askId", a->id);
+                    add_str(d, "text", a->text);
+                    add_str(d, "kind", "chapter_review");
+                    push_event("ask", d);
+                }
                 ask_unref(a);   /* 消息已消费，退还消息那份引用 */
             }
         }
@@ -1003,11 +1010,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g.engine) { engine_destroy(g.engine); g.engine = NULL; }
         if (g.project) { project_destroy(g.project); g.project = NULL; }
         if (g.config) { config_destroy(g.config); g.config = NULL; }
+        if (g_wv) { g_wv->lpVtbl->Release(g_wv); g_wv = NULL; }   /* get_CoreWebView2 是 AddRef 过的，不 Release 就漏一份（P1 COM 泄漏） */
         if (g_ctrl) {
             g_ctrl->lpVtbl->Close(g_ctrl);
             g_ctrl->lpVtbl->Release(g_ctrl);
             g_ctrl = NULL;
-            g_wv = NULL;
         }
         PostQuitMessage(0);
         return 0;
