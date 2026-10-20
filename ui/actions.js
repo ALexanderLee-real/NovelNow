@@ -182,8 +182,10 @@ $('btnGenChars').onclick = () => fire('generate_characters', {});
   });
 });
 
-/* 人物编辑：点列表项打开弹层 */
-$('charList').addEventListener('click', () => openCharEditor());
+/* 人物编辑：点列表项打开弹层；点列表空白不许误开（P1） */
+$('charList').addEventListener('click', e => {
+  if (e.target.closest('.item')) openCharEditor();
+});
 
 /* ---- 设置页 ---- */
 $('presetRow').addEventListener('click', e => {

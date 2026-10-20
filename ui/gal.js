@@ -149,7 +149,8 @@ function galRenderNodeText(text) {
 /* 生成中：只提示进度，正文等剧本到手后逐句播出（不整篇流铺） */
 function galStream(delta) {
   if (!delta) return;
-  G.streamRaw += delta;
+  /* 演出进行中：新 delta 不许盖舞台（P1） */
+  if (GAL_PLAY && GAL_PLAY.active) return;
   const box = $('galText');
   if (box && !box.querySelector('.gal-typing')) {
     box.innerHTML = '<div class="gal-typing">剧本生成中…</div>';

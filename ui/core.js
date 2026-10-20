@@ -118,10 +118,15 @@ function onMessage(m) {
       /* 流式增量：实时回填当前打开的章节编辑器（其它章节等 task_done 刷新） */
       if (d.index === S.openChapter && d.delta) {
         const ta = $('chContent');
+        /* 增量计字：每帧整篇 replace 重算对长章是 O(n²)（P1）。只数新增片段；
+           基准长度对不上（换章/手工编辑/task_done 刷新过）才重算一次兜底 */
+        const before = ta.value;
+        if (S._wcLen !== before.length) S._wc = before.replace(/\s/g, '').length;
+        S._wcLen = before.length + d.delta.length;
+        S._wc += d.delta.replace(/\s/g, '').length;
         ta.value += d.delta;
         ta.scrollTop = ta.scrollHeight;
-        const wc = ta.value.replace(/\s/g, '').length;
-        $('chWc').textContent = num(wc) + ' 字 · 生成中…';
+        $('chWc').textContent = num(S._wc) + ' 字 · 生成中…';
       }
       break;
 

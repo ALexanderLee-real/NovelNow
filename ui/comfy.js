@@ -100,7 +100,8 @@ $('btnComfySave').onclick = () => {
 $('comfyAutoBg').addEventListener('change', () => fire('save_config', collectCfg()));
 
 $('btnComfyGen').onclick = () => {
-  if (!S.proj) { toast('warn', '先打开项目'); return; }
+  /* S.proj 初值就是空对象，裸判恒真（P1）——要看有没有项目得判 hasProject */
+  if (!S.proj || !S.proj.hasProject) { toast('warn', '先打开项目'); return; }
   const out = (G.outline && G.outline.nodes) ? G.outline.nodes : [];
   const cur = out[G.outlinePos];
   const n = G.nodes[G.current];

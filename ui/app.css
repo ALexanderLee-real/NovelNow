@@ -791,7 +791,7 @@ html[data-theme="light"] .overlay { background: rgba(30, 34, 60, 0.28); }
 }
 
 /* 署名位 */
-.statusbar .credit { font-size: 11px; color: var(--muted, #888); opacity: .75; margin-right: 8px; white-space: nowrap; }
+.statusbar .credit { font-size: 11px; color: var(--text-3); opacity: .75; margin-right: 8px; white-space: nowrap; }
 
 /* ============================================================
  * 剧情分支（galgame 实时定制）
