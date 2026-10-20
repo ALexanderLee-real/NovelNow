@@ -21,6 +21,8 @@ static BOOL CALLBACK throttle_init_fn(PINIT_ONCE once, PVOID param, PVOID *ctx)
 /* 请求发出前的节流闸：把相邻两次 AI 请求（含流式）的间隔拉到
    cfg->rate_limit_ms 以上。所有工作线程共用一把闸，全自动写作
    连发请求时也会被依次排开。 */
+static void abortable_sleep(DWORD ms);   /* 前向声明：ai_throttle_wait 在定义前用到 */
+
 static void ai_throttle_wait(const ai_config_t *cfg)
 {
     if (!cfg || cfg->rate_limit_ms <= 0) return;
@@ -36,7 +38,7 @@ static void ai_throttle_wait(const ai_config_t *cfg)
         g_last_request_tick = now + wait;
     }
     LeaveCriticalSection(&g_throttle_cs);
-    if (wait) Sleep((DWORD)wait);
+    if (wait) abortable_sleep((DWORD)wait);
 }
 
 /* 判断错误是否值得重试：限流(429)、服务端 5xx、连接类失败。
@@ -115,12 +117,25 @@ void abort_err(char **err_out)
     }
 }
 
+/* 可打断睡眠：按 100ms 切片，abort/退出时立刻醒。
+   没有它，WM_DESTROY 等工作线程收场（3 秒预算）就是空等——线程可能
+   正卡在 30 秒退避或限流睡眠里，而关窗不能陪它睡（P1）。 */
+static void abortable_sleep(DWORD ms)
+{
+    DWORD waited = 0;
+    while (waited < ms) {
+        if (ai_aborted()) return;
+        Sleep(100);
+        waited += 100;
+    }
+}
+
 /* 指数退避：2s, 4s, 8s ... 封顶 30s */
 static void retry_backoff_sleep(int attempt)
 {
     DWORD ms = 2000u << (attempt > 4 ? 4 : attempt);
     if (ms > 30000) ms = 30000;
-    Sleep(ms);
+    abortable_sleep(ms);
 }
 
 /* ============== 配置管理 ============== */

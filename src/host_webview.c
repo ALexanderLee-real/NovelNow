@@ -821,14 +821,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             /* 从 WebView2 回调里同步回投会丢包，改到这里；失败则入重投队列。 */
             hr = g_wv->lpVtbl->PostWebMessageAsJson(g_wv, w);
             if (SUCCEEDED(hr)) { free(w); return 0; }
-            if (g_postRetryN < POST_RETRY_MAX) {
-                g_postRetry[g_postRetryN++] = w;
+            if (post_retry_push(w)) {
                 if (g_postRetryTries == 0)
                     log_line("!! 投递失败 hr=0x%08lX，转入重投队列（当前 %d 条待发）",
                              (unsigned long)hr, g_postRetryN);
                 SetTimer(hwnd, IDT_POST_RETRY, 200, NULL);
             } else {
-                log_line("!! 投递失败 hr=0x%08lX 且重投队列已满，丢弃一条", (unsigned long)hr);
+                log_line("!! 投递失败 hr=0x%08lX 且重投队列扩容失败（内存不足），丢弃一条", (unsigned long)hr);
                 free(w);
             }
         }
@@ -1001,15 +1000,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_shuttingDown = 1;
         KillTimer(hwnd, IDT_AUTOSAVE);
         KillTimer(hwnd, IDT_POST_RETRY);
-        {
-            int i;
-            for (i = 0; i < g_postRetryN; i++) free(g_postRetry[i]);
-            g_postRetryN = 0;
-        }
+        post_retry_clear();
         ask_release_all();
-        if (g.engine) { engine_destroy(g.engine); g.engine = NULL; }
-        if (g.project) { project_destroy(g.project); g.project = NULL; }
-        if (g.config) { config_destroy(g.config); g.config = NULL; }
+        /* 中止在途 AI 请求，让退避/限流睡眠立刻醒来，工作线程好收场 */
+        ai_abort_current();
+        /* 等工作线程收场（最多 3 秒），再拆共享对象（P1 竞态）。
+           为什么限时：HttpSendRequest 发送阶段不可打断（g_active_req 在发送
+           之后才登记），最坏卡 timeout 秒，关窗不能陪它卡。
+           为什么超时后不硬拆：engine/project/config 正被工作线程改写，强行
+           destroy 就是 UAF（P0-C 的写侧）。不释放只是退出时交进程回收，安全。
+           comfy 线程走 launch_thread_untracked 不占计数。 */
+        {
+            int waited = 0;
+            while (waited < 30 && InterlockedCompareExchange(&g_liveThreads, 0, 0) > 0) {
+                Sleep(100);
+                waited++;
+            }
+            if (InterlockedCompareExchange(&g_liveThreads, 0, 0) > 0) {
+                log_line("!! 退出时仍有 %ld 个工作线程在跑，跳过 engine/project/config "
+                         "释放（进程退出统一回收，防 UAF）",
+                         (long)InterlockedCompareExchange(&g_liveThreads, 0, 0));
+            } else {
+                if (g.engine) { engine_destroy(g.engine); g.engine = NULL; }
+                if (g.project) { project_destroy(g.project); g.project = NULL; }
+                if (g.config) { config_destroy(g.config); g.config = NULL; }
+            }
+        }
         if (g_wv) { g_wv->lpVtbl->Release(g_wv); g_wv = NULL; }   /* get_CoreWebView2 是 AddRef 过的，不 Release 就漏一份（P1 COM 泄漏） */
         if (g_ctrl) {
             g_ctrl->lpVtbl->Close(g_ctrl);

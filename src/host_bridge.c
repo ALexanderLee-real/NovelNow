@@ -158,12 +158,38 @@ void add_str(cJSON *o, const char *k, const char *v)
    实测同一份文件、同一个 exe，闭环成功率只有 50% 左右，高下全看这个竞态；
    而 cmd_hello 的回执正好撞在这个窗口里，所以启动握手首当其冲。
    对策：投失败的报文不丢，进队列，等可见性自愈后按原顺序补发。 */
-#define POST_RETRY_MAX  64
 #define IDT_POST_RETRY  95
 
-WCHAR *g_postRetry[POST_RETRY_MAX];
-int    g_postRetryN = 0;
-int    g_postRetryTries = 0;
+WCHAR **g_postRetry = NULL;
+int     g_postRetryN = 0;
+int     g_postRetryCap = 0;
+int     g_postRetryTries = 0;
+
+/* 入队一条待重投报文。容量不够就倍增扩容——固定 64 条会在长章节的流式
+   期间（chapter_delta 一章几百条）见底，丢谁都不对（P1）。
+   返回 0=OOM：调用方负责 free(w)。 */
+int post_retry_push(WCHAR *w)
+{
+    if (g_postRetryN >= g_postRetryCap) {
+        int cap = g_postRetryCap ? g_postRetryCap * 2 : 16;
+        WCHAR **p = (WCHAR **)realloc(g_postRetry, sizeof(WCHAR *) * (size_t)cap);
+        if (!p) return 0;
+        g_postRetry = p;
+        g_postRetryCap = cap;
+    }
+    g_postRetry[g_postRetryN++] = w;
+    return 1;
+}
+
+void post_retry_clear(void)
+{
+    int i;
+    for (i = 0; i < g_postRetryN; i++) free(g_postRetry[i]);
+    free(g_postRetry);
+    g_postRetry = NULL;
+    g_postRetryN = 0;
+    g_postRetryCap = 0;
+}
 
 /* 在消息循环里补发；顺带把卡住的可见性推一把 */
 void post_retry_pump(HWND hwnd)
@@ -352,7 +378,49 @@ void post_task_done(const char *cmd, int result, int ok,
     if (!PostMessageW(g_hwnd, NWM_TASK_DONE, (WPARAM)t, 0)) task_done_free(t);
 }
 
+/* ---- 工作线程登记：WM_DESTROY 要等共享对象的使用者收场（P1）----
+   trampoline 在真实线程体前后记账 g_liveThreads。共享对象指
+   g.project/g.engine/g.config——th_* 的 engine_* 调用会改写它们。 */
+volatile LONG g_liveThreads = 0;
+
+typedef struct {
+    LPTHREAD_START_ROUTINE fn;
+    LPVOID param;
+} thread_wrap_t;
+
+static DWORD WINAPI thread_trampoline(LPVOID p)
+{
+    thread_wrap_t *tw = (thread_wrap_t *)p;
+    LPTHREAD_START_ROUTINE fn = tw->fn;
+    LPVOID param = tw->param;
+    free(tw);
+    fn(param);
+    InterlockedDecrement(&g_liveThreads);
+    return 0;
+}
+
 int launch_thread(LPTHREAD_START_ROUTINE fn, LPVOID param)
+{
+    DWORD tid;
+    HANDLE h;
+    thread_wrap_t *tw = (thread_wrap_t *)malloc(sizeof(thread_wrap_t));
+    if (!tw) return 0;
+    tw->fn = fn;
+    tw->param = param;
+    InterlockedIncrement(&g_liveThreads);
+    h = CreateThread(NULL, 0, thread_trampoline, tw, 0, &tid);
+    if (!h) {
+        InterlockedDecrement(&g_liveThreads);
+        free(tw);
+        return 0;
+    }
+    CloseHandle(h);
+    return 1;
+}
+
+/* 不登记版：只给不碰 g.project/g.engine/g.config 的线程用（comfy 配图/探活，
+   自带参数拷贝、最长轮询 5 分钟），免得拖住关窗收场等待 */
+int launch_thread_untracked(LPTHREAD_START_ROUTINE fn, LPVOID param)
 {
     DWORD tid;
     HANDLE h = CreateThread(NULL, 0, fn, param, 0, &tid);

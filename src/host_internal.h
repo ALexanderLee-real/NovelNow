@@ -159,12 +159,16 @@ extern IStream         *g_shotStream;
 extern int              g_visTries;
 extern PFN_CreateEnv  g_pCreateEnv;
 extern PFN_GetVersion g_pGetVersion;
-/* 未就绪报文重投队列（post_retry_pump 在 bridge，WndProc 定时器在 webview） */
-#define POST_RETRY_MAX  64
+/* 未就绪报文重投队列（post_retry_pump 在 bridge，WndProc 定时器在 webview）。
+   动态数组：固定 64 条在长章节流式期间（chapter_delta 一章几百条）不够用，
+   满了丢包会把 chapter_written 之类的关键事件弄丢（P1）。 */
 #define IDT_POST_RETRY  95
-extern WCHAR *g_postRetry[POST_RETRY_MAX];
-extern int    g_postRetryN;
-extern int    g_postRetryTries;
+extern WCHAR **g_postRetry;
+extern int     g_postRetryN;
+extern int     g_postRetryCap;
+extern int     g_postRetryTries;
+int  post_retry_push(WCHAR *w);   /* 满了自动扩容；返回 0=OOM（调用方自己 free w） */
+void post_retry_clear(void);
 extern CRITICAL_SECTION g_askCs;
 extern int      g_askCsReady;
 extern ask_t   *g_asks;
@@ -219,6 +223,10 @@ void on_text_delta(const char *delta, void *user_data);
 void task_done_free(task_done_t *t);
 void post_task_done(const char *cmd, int result, int ok,                            const char *message, int chapter);
 int launch_thread(LPTHREAD_START_ROUTINE fn, LPVOID param);
+int launch_thread_untracked(LPTHREAD_START_ROUTINE fn, LPVOID param);
+    /* 不占收场计数：只给不碰 g.project/g.engine/g.config 的线程用
+       （comfy 线程，最长轮询 5 分钟，不能拖住关窗等待） */
+extern volatile LONG g_liveThreads;   /* 在跑的工作线程数（launch_thread 记账） */
 const char *engine_err(void);
 void restart_autosave(void);
 int save_project_silently(void);

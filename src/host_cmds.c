@@ -425,7 +425,11 @@ void cmd_hello(int id)
     w_to_u8(NW_VERSION, ver, sizeof(ver));
     add_str(d, "version", ver);
     cJSON_AddItemToObject(d, "config", config_json());
-    cJSON_AddItemToObject(d, "project", project_meta_json(g.project));
+    /* 忙时工作线程正改写 g.project（章节数组 realloc、字符串 free/str_dup），
+       深读就是 UAF（P0-C 读侧漏网的最后一个入口）。喂无项目空壳——
+       project_meta_json(NULL) 返回合法 hasProject:0 壳；前端 handleTaskDone
+       白名单会在任务结束后 refreshProject 补真数据，不会卡在假状态上。 */
+    cJSON_AddItemToObject(d, "project", project_meta_json(is_busy() ? NULL : g.project));
     cJSON_AddBoolToObject(d, "busy", is_busy() ? 1 : 0);
     add_str(d, "exportDir", g.export_dir);
     add_str(d, "lastDoc", g.last_doc);
@@ -1255,7 +1259,7 @@ void cmd_dispatch(cJSON *root)
         if (!url || !*url) url = (g.config && g.config->comfy_url) ? g.config->comfy_url : "";
         copy = str_dup(url);
         if (!copy) { reply_err(id, cmd, "内存不足"); return; }
-        if (!launch_thread(th_comfy_test, copy)) {
+        if (!launch_thread_untracked(th_comfy_test, copy)) {
             free(copy); reply_err(id, cmd, "无法启动线程"); return;
         }
         accepted = cJSON_CreateObject();
@@ -1334,7 +1338,7 @@ void cmd_dispatch(cJSON *root)
             free(t->prompt); free(t->out_path); free(t);
             reply_err(id, cmd, "内存不足"); return;
         }
-        if (!launch_thread(th_comfy_gen, t)) {
+        if (!launch_thread_untracked(th_comfy_gen, t)) {
             free(t->node); free(t->url); free(t->workflow_json);
             free(t->prompt); free(t->out_path); free(t);
             reply_err(id, cmd, "无法启动线程"); return;
