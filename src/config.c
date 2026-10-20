@@ -170,17 +170,19 @@ app_config_t* config_load(const char *path)
     cJSON *ai_obj = cJSON_GetObjectItem(root, "ai");
     if (ai_obj) {
         cJSON *item;
+        /* str_dup 可能 OOM 返回 NULL：先拷成功再替换，失败保留旧值——
+           直接 free 再赋 NULL 会让 config_save 对 NULL 求 strlen 崩（P1-⑥） */
         if ((item = cJSON_GetObjectItem(ai_obj, "api_url")) && cJSON_IsString(item)) {
-            free(cfg->ai->api_url);
-            cfg->ai->api_url = str_dup(item->valuestring);
+            char *tmp = str_dup(item->valuestring);
+            if (tmp) { free(cfg->ai->api_url); cfg->ai->api_url = tmp; }
         }
         if ((item = cJSON_GetObjectItem(ai_obj, "api_key")) && cJSON_IsString(item)) {
-            free(cfg->ai->api_key);
-            cfg->ai->api_key = str_dup(item->valuestring);
+            char *tmp = str_dup(item->valuestring);
+            if (tmp) { free(cfg->ai->api_key); cfg->ai->api_key = tmp; }
         }
         if ((item = cJSON_GetObjectItem(ai_obj, "model")) && cJSON_IsString(item)) {
-            free(cfg->ai->model);
-            cfg->ai->model = str_dup(item->valuestring);
+            char *tmp = str_dup(item->valuestring);
+            if (tmp) { free(cfg->ai->model); cfg->ai->model = tmp; }
         }
         if ((item = cJSON_GetObjectItem(ai_obj, "temperature")) && cJSON_IsNumber(item)) {
             cfg->ai->temperature = item->valuedouble;
@@ -203,7 +205,12 @@ app_config_t* config_load(const char *path)
             cfg->ai->max_tokens = m;
         }
         if ((item = cJSON_GetObjectItem(ai_obj, "timeout")) && cJSON_IsNumber(item)) {
-            cfg->ai->timeout = item->valueint;
+            /* 与请求侧 http_request_ex 的钳制同口径 [5, 3600]，别让 0/负数
+               躺进配置、到发请求时才被静默改掉 */
+            int t = item->valueint;
+            if (t < 5) t = 5;
+            if (t > 3600) t = 3600;
+            cfg->ai->timeout = t;
         }
         if ((item = cJSON_GetObjectItem(ai_obj, "rate_limit_ms")) && cJSON_IsNumber(item)) {
             int r = item->valueint;
@@ -235,12 +242,16 @@ app_config_t* config_load(const char *path)
     
     if ((item = cJSON_GetObjectItem(root, "language")) && cJSON_IsString(item)) {
         cfg->language = str_dup(item->valuestring);
-    } else {
-        cfg->language = str_dup("zh-CN");
     }
+    if (!cfg->language) cfg->language = str_dup("zh-CN");   /* 缺省兜底；OOM 还失败就靠 config_save 的空串兜底 */
     
     if ((item = cJSON_GetObjectItem(root, "auto_save_interval")) && cJSON_IsNumber(item)) {
-        cfg->auto_save_interval = item->valueint;
+        /* 0=关闭自动保存（restart_autosave 只在 >0 时 SetTimer），负数归 0；
+           上限 86400 秒（1 天），防止天文数字把 sec*1000u 的 UINT 挤溢出 */
+        int s = item->valueint;
+        if (s < 0) s = 0;
+        if (s > 86400) s = 86400;
+        cfg->auto_save_interval = s;
     } else {
         cfg->auto_save_interval = 30;
     }
@@ -277,7 +288,7 @@ app_config_t* config_load(const char *path)
         char *exe_dir = get_exe_dir();
         cfg->projects_dir = path_join(exe_dir, "projects");
         free(exe_dir);
-    } else if (!file_exists(cfg->projects_dir) && ensure_dir(cfg->projects_dir) != 0) {
+    } else if (!dir_exists(cfg->projects_dir) && ensure_dir(cfg->projects_dir) != 0) {   /* dir_exists：被同名文件占位的路径不算可用目录（P1-⑦） */
         free(cfg->projects_dir);
         char *exe_dir = get_exe_dir();
         cfg->projects_dir = path_join(exe_dir, "projects");
@@ -296,9 +307,10 @@ int config_save(app_config_t *cfg, const char *path)
     cJSON *root = cJSON_CreateObject();
     
     cJSON *ai_obj = cJSON_CreateObject();
-    cJSON_AddStringToObject(ai_obj, "api_url", cfg->ai->api_url);
-    cJSON_AddStringToObject(ai_obj, "api_key", cfg->ai->api_key);
-    cJSON_AddStringToObject(ai_obj, "model", cfg->ai->model);
+    /* NULL 兜底空串：cJSON_CreateString 对 NULL 求 strlen 会崩（P1-⑥） */
+    cJSON_AddStringToObject(ai_obj, "api_url", cfg->ai->api_url ? cfg->ai->api_url : "");
+    cJSON_AddStringToObject(ai_obj, "api_key", cfg->ai->api_key ? cfg->ai->api_key : "");
+    cJSON_AddStringToObject(ai_obj, "model", cfg->ai->model ? cfg->ai->model : "");
     cJSON_AddNumberToObject(ai_obj, "temperature", cfg->ai->temperature);
     cJSON_AddNumberToObject(ai_obj, "max_tokens", cfg->ai->max_tokens);
     cJSON_AddNumberToObject(ai_obj, "timeout", cfg->ai->timeout);
@@ -306,10 +318,10 @@ int config_save(app_config_t *cfg, const char *path)
     cJSON_AddNumberToObject(ai_obj, "max_retries", cfg->ai->max_retries);
     cJSON_AddItemToObject(root, "ai", ai_obj);
     
-    cJSON_AddStringToObject(root, "projects_dir", cfg->projects_dir);
+    cJSON_AddStringToObject(root, "projects_dir", cfg->projects_dir ? cfg->projects_dir : "");
     if (cfg->export_dir && *cfg->export_dir)
         cJSON_AddStringToObject(root, "export_dir", cfg->export_dir);
-    cJSON_AddStringToObject(root, "language", cfg->language);
+    cJSON_AddStringToObject(root, "language", cfg->language ? cfg->language : "zh-CN");
     cJSON_AddNumberToObject(root, "auto_save_interval", cfg->auto_save_interval);
     cJSON_AddNumberToObject(root, "enable_consistency_check", cfg->enable_consistency_check ? 1 : 0);
     cJSON_AddStringToObject(root, "comfy_url", cfg->comfy_url ? cfg->comfy_url : "");

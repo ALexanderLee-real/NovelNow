@@ -253,8 +253,10 @@ int ensure_dir(const char *path)
             tmp[i] = path[i];
         }
     }
-    /* 必须检验最终 mkdir 的结果：失败当成功会让 config/project 的兜底检测全瞎 */
-    return (mkdir_u8(tmp) == 0 || file_exists(tmp)) ? 0 : -1;
+    /* 必须检验最终 mkdir 的结果：失败当成功会让 config/project 的兜底检测全瞎。
+       用 dir_exists 不用 file_exists：路径被同名文件占位时 file_exists 报真，
+       会把「建目录失败」洗成成功（P1-⑦） */
+    return (mkdir_u8(tmp) == 0 || dir_exists(tmp)) ? 0 : -1;
 }
 
 int file_exists(const char *path)
@@ -270,6 +272,22 @@ int file_exists(const char *path)
 #else
     struct stat st;
     return (stat(path, &st) == 0);
+#endif
+}
+
+int dir_exists(const char *path)
+{
+    if (!path) return 0;
+#ifdef _WIN32
+    {
+        wchar_t *w = u8_to_wide(path);
+        DWORD attr = w ? GetFileAttributesW(w) : INVALID_FILE_ATTRIBUTES;
+        free(w);
+        return (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY));
+    }
+#else
+    struct stat st;
+    return (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
 #endif
 }
 

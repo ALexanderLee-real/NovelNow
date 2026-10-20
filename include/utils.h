@@ -38,6 +38,7 @@ int write_file(const char *path, const char *content);
 int write_file_atomic(const char *path, const char *content);
 int ensure_dir(const char *path);
 int file_exists(const char *path);
+int dir_exists(const char *path);   /* 是目录才算存在（file_exists 对同名文件也报真，拿来判目录会假成功） */
 /* UTF-8 路径安全 fopen：Windows 下走 _wfopen，「舞台图片」这类中文路径窄字符 fopen 会炸 */
 FILE *fopen_utf8(const char *path, const char *mode);
 

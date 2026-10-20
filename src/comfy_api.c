@@ -21,7 +21,8 @@
 
 #pragma comment(lib, "wininet.lib")
 
-#define COMFY_POLL_MAX     300   /* 轮询次数上限：300 * 1s ≈ 5 分钟 */
+#define COMFY_POLL_MAX     300   /* 次数双保险；真正的封顶是 comfy_generate 里的墙钟 deadline（5 分钟）——
+                                     每轮 GET 带 30s 超时，只数次数最坏 300×31s≈2.5h，别再拿「300*1s≈5 分钟」骗人 */
 #define COMFY_RESP_CAP     (64u * 1024u * 1024u)   /* 响应体上限 64MB */
 #define COMFY_IMAGE_MAX    (16u * 1024u * 1024u)   /* data URL 图片上限 16MB */
 
@@ -273,6 +274,16 @@ int comfy_generate(const char *base_url, const char *workflow_json,
     /* 1. 注入提示词，包成提交体 */
     wf = inject_prompt(workflow_json, prompt ? prompt : "");
     if (!wf) { snprintf(err, errlen, "内存不足"); goto done; }
+    { /* workflow 必须是 JSON 对象（ComfyUI 节点图）：不然拼出的提交体是非法的，
+         对面报 400 还看不出为什么（P1-⑩） */
+        cJSON *wf_chk = cJSON_Parse(wf);
+        if (!wf_chk || !cJSON_IsObject(wf_chk)) {
+            cJSON_Delete(wf_chk);
+            snprintf(err, errlen, "工作流 JSON 不是 JSON 对象（ComfyUI 要求节点图，检查工作流文件内容）");
+            goto done;
+        }
+        cJSON_Delete(wf_chk);
+    }
     {
         size_t n = strlen(wf) + 64;
         body = (char *)malloc(n);
@@ -298,8 +309,11 @@ int comfy_generate(const char *base_url, const char *workflow_json,
     snprintf(prompt_id, sizeof(prompt_id), "%s", item->valuestring);
     cJSON_Delete(root); root = NULL;
 
-    /* 3. 轮询 /history/{id} 直到 outputs 里出图 */
-    for (i = 0; i < COMFY_POLL_MAX; i++) {
+    /* 3. 轮询 /history/{id} 直到 outputs 里出图。
+       墙钟 5 分钟 deadline 为主、COMFY_POLL_MAX 为次级保险：每轮 GET 带 30s 超时，
+       只数次数最坏能磨 300×31s≈2.5 小时（P1-⑨，旧注释吹「≈5 分钟」是骗人的） */
+    ULONGLONG poll_deadline = GetTickCount64() + 5ull * 60 * 1000;
+    for (i = 0; i < COMFY_POLL_MAX && GetTickCount64() < poll_deadline; i++) {
         cJSON *entry, *status_obj, *ss;
         Sleep(1000);
         cbuf_free(&resp);
