@@ -187,9 +187,8 @@ function handleTaskDone(d) {
 
   /* 项目结构变化的命令：刷新章节列表等 */
   if (d.cmd === 'fetch_models' && d.ok && d.models) {
-    const dl = $('modelList');
-    if (!dl) return;
-    dl.innerHTML = d.models.map(m => `<option value="${esc(m)}">`).join('');
+    /* 复用 render.js 的 fillModelList，别再手写一份 innerHTML（P1 双实现） */
+    if (typeof fillModelList === 'function') fillModelList(d.models);
     toast('success', '已获取 ' + d.models.length + ' 个模型，点「模型」输入框可见下拉');
     return;
   }

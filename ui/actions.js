@@ -148,8 +148,9 @@ $('btnFinale').onclick = () => {
 $('btnExport').onclick = () => {
   const dir = outDir();
   if (!dir) { toast('warn', '还没有设置输出目录，先点「选择目录」'); return; }
-  /* 三个键名一起带，C 侧认哪个用哪个 */
-  send('export', { dir: dir, path: dir, exportDir: dir }).then(d => {
+  /* C 侧 export 只读 "dir"（host_cmds.c:900 p_str(root,"dir",NULL)），多发废键只会
+     让两边键名契约越来越糊（P1：曾经三键齐发 dir/path/exportDir） */
+  send('export', { dir: dir }).then(d => {
     S.cfg.lastDoc = d.doc || '';
     S.cfg.lastTxt = d.txt || '';
     renderSidebar();
@@ -408,7 +409,6 @@ $('btnCancel').onclick = () => {
   if (typeof G !== 'undefined') {
     if (G.cb) { const prev = G.cb; G.cb = null; prev.reject(new Error('已取消')); }
     G.awaiting = null;
-    G.streamRaw = '';
   }
   $('btnCancel').disabled = true;
 };

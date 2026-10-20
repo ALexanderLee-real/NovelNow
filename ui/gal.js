@@ -14,7 +14,6 @@ const G = {
   flags: { favor: 0, trust: 0, sanity: 0, shards: 0 },
   bools: {},          /* 布尔旗标（≤12） */
   awaiting: null,     /* 'plan' | 'outline' | 'scene' —— 决定 text_delta 改道 */
-  streamRaw: '',
   cb: null            /* aiCall 的 {resolve, reject} */
 };
 
@@ -34,7 +33,7 @@ function aiCall(system, user) {
        600s 超时是防真死锁的兜底，不能用默认 30s 误杀慢响应 */
     send('ai_call', { system, user }, 600000).catch(e => {
       if (G.cb === my) G.cb = null;
-      G.awaiting = null; G.streamRaw = '';   /* 失败后别让残留 'scene' 把 delta 灌进舞台 */
+      G.awaiting = null;   /* 失败后别让残留 'scene' 把 delta 灌进舞台 */
       reject(e);
     });
   });
@@ -240,7 +239,6 @@ function galLoad() {
   /* 切项目：先斩断在飞的旧 ai_call，否则旧节点兑付后会 galSave 进新项目（跨项目污染） */
   if (G.cb) { const prev = G.cb; G.cb = null; prev.reject(new Error('项目已切换，剧情生成已中断')); }
   G.awaiting = null;
-  G.streamRaw = '';
   send('get_gal').then(r => {
     let s = null;
     try { s = typeof r.gal === 'string' ? JSON.parse(r.gal) : r.gal; } catch (e) { s = null; }
@@ -365,7 +363,6 @@ async function galNextNode(first, nextHint) {
   if (!G.plan) { toast('warn', '请先生成企划'); return; }
   setBusy(true);
   G.awaiting = 'scene';
-  G.streamRaw = '';
   $('galChoices').innerHTML = '';
   $('galBtnNext').disabled = true;
   galSetPhase(first ? '开场演出中…' : 'L3 场景生成中…');
@@ -395,7 +392,6 @@ async function galNextNode(first, nextHint) {
     };
     G.nodes[nextId] = node;
     G.current = nextId;
-    G.streamRaw = '';
     G.awaiting = null;
     /* 对话演出：逐句播完再出选项（继续/选项都等演完） */
     galPlayNode(node, () => {
