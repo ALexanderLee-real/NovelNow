@@ -464,482 +464,581 @@ int check_project(int id, const char *cmd)
     return 1;
 }
 
-void cmd_dispatch(cJSON *root)
-{
-    const char *cmd = j_str(root, "cmd", NULL);
-    int id = j_int(root, "id", 0);
-    cJSON *accepted;
 
-    if (!cmd) return;
+
 
     /* ---- 任务进行中也允许的命令 ---- */
-    if (strcmp(cmd, "hello") == 0) { cmd_hello(id); return; }
-    if (strcmp(cmd, "get_config") == 0) { reply_ok(id, cmd, config_json()); return; }
-    if (strcmp(cmd, "list_projects") == 0) { reply_project_list(id, cmd); return; }
+static void h_hello(cJSON *root, const char *cmd, int id)
+{
+ cmd_hello(id); return; 
+}
+
+
+static void h_get_config(cJSON *root, const char *cmd, int id)
+{
+ reply_ok(id, cmd, config_json()); return; 
+}
+
+
+static void h_list_projects(cJSON *root, const char *cmd, int id)
+{
+ reply_project_list(id, cmd); return; 
+}
+
+
     /* 读命令也拦忙时：工作线程（th_*）正在改写 project——章节数组 realloc、
        字符串 free/str_dup，主线程深读就是 UAF（P0-C）。任务结束后前端
        handleTaskDone 会自动 refreshProject，数据不丢。 */
-    if (strcmp(cmd, "get_project") == 0) {
-        if (require_idle_reply(id, cmd, "读取项目")) return;
-        reply_ok(id, cmd, project_meta_json(g.project));
-        return;
-    }
-    if (strcmp(cmd, "ping") == 0) {
-        cJSON *d = cJSON_CreateObject();
-        cJSON_AddNumberToObject(d, "tick", (double)GetTickCount());
-        reply_ok(id, cmd, d);
-        /* 前端在 hello 回执之后会补一次 ping：这条日志出现即证明
-           JS -> C -> JS 双向通道都通（排查白屏时先看这里）。 */
-        log_line("闭环确认：JS -> C -> JS 双向通畅");
-        return;
-    }
+static void h_get_project(cJSON *root, const char *cmd, int id)
+{
+    if (require_idle_reply(id, cmd, "读取项目")) return;
+    reply_ok(id, cmd, project_meta_json(g.project));
+    return;
+}
+
+
+static void h_ping(cJSON *root, const char *cmd, int id)
+{
+    cJSON *d = cJSON_CreateObject();
+    cJSON_AddNumberToObject(d, "tick", (double)GetTickCount());
+    reply_ok(id, cmd, d);
+    /* 前端在 hello 回执之后会补一次 ping：这条日志出现即证明
+       JS -> C -> JS 双向通道都通（排查白屏时先看这里）。 */
+    log_line("闭环确认：JS -> C -> JS 双向通畅");
+    return;
+}
+
+
     /* ---- UI 自检通道 ----
        前端把诊断信息写进 webui.log。WebView2 的 DevTools 控制台在本环境下
        拿不到，这是排查白屏 / JS 异常唯一可观测的路径。 */
-    if (strcmp(cmd, "log") == 0) {
-        const char *m = p_str(root, "msg", "");
-        log_line("[UI] %s", m ? m : "(空)");
-        return;
-    }
+static void h_log(cJSON *root, const char *cmd, int id)
+{
+    const char *m = p_str(root, "msg", "");
+    log_line("[UI] %s", m ? m : "(空)");
+    return;
+}
+
+
     /* 窗口标题随界面语言同步（前端 applyLanguage / initI18n 调 set_title） */
-    if (strcmp(cmd, "set_title") == 0) {
-        const char *t = p_str(root, "title", "");
-        if (t && *t) {
-            WCHAR *w = u8_to_w(t);
-            if (w) {
-                SetWindowTextW(g.hwnd, w);
-                free(w);
-            }
+static void h_set_title(cJSON *root, const char *cmd, int id)
+{
+    const char *t = p_str(root, "title", "");
+    if (t && *t) {
+        WCHAR *w = u8_to_w(t);
+        if (w) {
+            SetWindowTextW(g.hwnd, w);
+            free(w);
         }
-        reply_ok(id, cmd, NULL);
+    }
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
+static void h_answer(cJSON *root, const char *cmd, int id)
+{
+    int aid = p_int(root, "askId", -1);
+    const char *ans = p_str(root, "answer", "cancel");
+    ask_t *it;
+    int v = 3;
+    if (ans && strcmp(ans, "yes") == 0) v = 1;
+    else if (ans && strcmp(ans, "no") == 0) v = 2;
+    if (g_askCsReady) {
+        EnterCriticalSection(&g_askCs);
+        for (it = g_asks; it; it = it->next) {
+            if (it->id == aid) { it->answer = v; SetEvent(it->done); break; }
+        }
+        LeaveCriticalSection(&g_askCs);
+    }
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
+static void h_cancel(cJSON *root, const char *cmd, int id)
+{
+    if (g.engine) engine_request_cancel(g.engine);
+    /* 工作线程可能正卡在 bridge_ask 的确认框上，这个状态下引擎的取消标志
+       不会被看到（检查点在章节之间，线程还没走到）。这里直接把待决询问
+       按「取消」唤醒，保证「取消任务」在确认框挡着时同样生效。 */
+    ask_release_all();
+    push_status("正在取消任务，将在当前步骤结束后停止...");
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
+static void h_get_chapter(cJSON *root, const char *cmd, int id)
+{
+    int idx = p_int(root, "index", -1);
+    /* P0-C：忙时工作线程可能正在改写章节数组，深读会踩 UAF */
+    if (require_idle_reply(id, cmd, "读取章节")) return;
+    if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
+        reply_err(id, cmd, "章节不存在");
         return;
     }
-    if (strcmp(cmd, "answer") == 0) {
-        int aid = p_int(root, "askId", -1);
-        const char *ans = p_str(root, "answer", "cancel");
-        ask_t *it;
-        int v = 3;
-        if (ans && strcmp(ans, "yes") == 0) v = 1;
-        else if (ans && strcmp(ans, "no") == 0) v = 2;
-        if (g_askCsReady) {
-            EnterCriticalSection(&g_askCs);
-            for (it = g_asks; it; it = it->next) {
-                if (it->id == aid) { it->answer = v; SetEvent(it->done); break; }
-            }
-            LeaveCriticalSection(&g_askCs);
-        }
-        reply_ok(id, cmd, NULL);
+    {
+        chapter_t *c = &g.project->chapters[idx];
+        cJSON *d = cJSON_CreateObject();
+        cJSON_AddNumberToObject(d, "index", idx);
+        add_str(d, "title", c->title);
+        add_str(d, "summary", c->summary);
+        add_str(d, "content", c->content);
+        cJSON_AddNumberToObject(d, "wordCount", c->word_count);
+        cJSON_AddNumberToObject(d, "status", c->status);
+        reply_ok(id, cmd, d);
+    }
+    return;
+}
+
+
+static void h_get_plan(cJSON *root, const char *cmd, int id)
+{
+    int idx = p_int(root, "index", -1);
+    /* P0-C：同 get_chapter，忙时禁止深读 plans 数组 */
+    if (require_idle_reply(id, cmd, "读取方案")) return;
+    if (!g.project || idx < 0 || idx >= g.project->plan_count) {
+        reply_err(id, cmd, "方案不存在");
         return;
     }
-    if (strcmp(cmd, "cancel") == 0) {
-        if (g.engine) engine_request_cancel(g.engine);
-        /* 工作线程可能正卡在 bridge_ask 的确认框上，这个状态下引擎的取消标志
-           不会被看到（检查点在章节之间，线程还没走到）。这里直接把待决询问
-           按「取消」唤醒，保证「取消任务」在确认框挡着时同样生效。 */
-        ask_release_all();
-        push_status("正在取消任务，将在当前步骤结束后停止...");
-        reply_ok(id, cmd, NULL);
-        return;
+    {
+        novel_plan_t *pl = &g.project->plans[idx];
+        cJSON *d = cJSON_CreateObject();
+        cJSON_AddNumberToObject(d, "index", idx);
+        add_str(d, "title", pl->title);
+        add_str(d, "synopsis", pl->synopsis);
+        add_str(d, "outline", pl->outline);
+        reply_ok(id, cmd, d);
     }
-    if (strcmp(cmd, "get_chapter") == 0) {
-        int idx = p_int(root, "index", -1);
-        /* P0-C：忙时工作线程可能正在改写章节数组，深读会踩 UAF */
-        if (require_idle_reply(id, cmd, "读取章节")) return;
-        if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
-            reply_err(id, cmd, "章节不存在");
-            return;
-        }
-        {
-            chapter_t *c = &g.project->chapters[idx];
-            cJSON *d = cJSON_CreateObject();
-            cJSON_AddNumberToObject(d, "index", idx);
-            add_str(d, "title", c->title);
-            add_str(d, "summary", c->summary);
-            add_str(d, "content", c->content);
-            cJSON_AddNumberToObject(d, "wordCount", c->word_count);
-            cJSON_AddNumberToObject(d, "status", c->status);
-            reply_ok(id, cmd, d);
-        }
-        return;
-    }
-    if (strcmp(cmd, "get_plan") == 0) {
-        int idx = p_int(root, "index", -1);
-        /* P0-C：同 get_chapter，忙时禁止深读 plans 数组 */
-        if (require_idle_reply(id, cmd, "读取方案")) return;
-        if (!g.project || idx < 0 || idx >= g.project->plan_count) {
-            reply_err(id, cmd, "方案不存在");
-            return;
-        }
-        {
-            novel_plan_t *pl = &g.project->plans[idx];
-            cJSON *d = cJSON_CreateObject();
-            cJSON_AddNumberToObject(d, "index", idx);
-            add_str(d, "title", pl->title);
-            add_str(d, "synopsis", pl->synopsis);
-            add_str(d, "outline", pl->outline);
-            reply_ok(id, cmd, d);
-        }
-        return;
-    }
+    return;
+}
+
+
     /* 只写 app 结构体里的 int 游标，不碰 project；读写都在 UI 主线程，
        与工作线程无争用——不用拦忙时（P0-C 复查结论） */
-    if (strcmp(cmd, "set_selected_chapter") == 0) {
-        int idx = p_int(root, "index", -1);
-        g.selected_chapter = idx;
-        reply_ok(id, cmd, NULL);
-        return;
-    }
+static void h_set_selected_chapter(cJSON *root, const char *cmd, int id)
+{
+    int idx = p_int(root, "index", -1);
+    g.selected_chapter = idx;
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
 
     /* 支线 C：Token 用量统计。只读 config 计数 + ai 层会话累计，不碰 project，
        任务进行中也允许（AI 任务跑着的时候才最想看用量） */
-    if (strcmp(cmd, "token_stats") == 0) {
-        long long sp = 0, sc = 0, st = 0;
-        cJSON *d = cJSON_CreateObject();
-        ai_usage_session(&sp, &sc, &st);
-        cJSON_AddNumberToObject(d, "sessionPrompt", (double)sp);
-        cJSON_AddNumberToObject(d, "sessionCompletion", (double)sc);
-        cJSON_AddNumberToObject(d, "sessionTotal", (double)st);
-        cJSON_AddNumberToObject(d, "prompt",     (double)(g.config ? g.config->tokens_prompt : 0));
-        cJSON_AddNumberToObject(d, "completion", (double)(g.config ? g.config->tokens_completion : 0));
-        cJSON_AddNumberToObject(d, "total",      (double)(g.config ? g.config->tokens_total : 0));
-        reply_ok(id, cmd, d);
-        return;
-    }
+static void h_token_stats(cJSON *root, const char *cmd, int id)
+{
+    long long sp = 0, sc = 0, st = 0;
+    cJSON *d = cJSON_CreateObject();
+    ai_usage_session(&sp, &sc, &st);
+    cJSON_AddNumberToObject(d, "sessionPrompt", (double)sp);
+    cJSON_AddNumberToObject(d, "sessionCompletion", (double)sc);
+    cJSON_AddNumberToObject(d, "sessionTotal", (double)st);
+    cJSON_AddNumberToObject(d, "prompt",     (double)(g.config ? g.config->tokens_prompt : 0));
+    cJSON_AddNumberToObject(d, "completion", (double)(g.config ? g.config->tokens_completion : 0));
+    cJSON_AddNumberToObject(d, "total",      (double)(g.config ? g.config->tokens_total : 0));
+    reply_ok(id, cmd, d);
+    return;
+}
+
+
 
     /* ---- 以下命令需要独占 project，任务运行中一律拒绝 ---- */
 
-    if (strcmp(cmd, "save_config") == 0) {
-        cJSON *p = j_params(root);
-        char *cfg_path;
-        if (require_idle_reply(id, cmd, "保存设置")) return;
-        apply_config_json(p ? p : root);
-        cfg_path = config_get_default_path();
-        if (config_save(g.config, cfg_path) == 0) {
-            restart_autosave();
-            reply_ok(id, cmd, config_json());
-            push_toast("success", "设置已保存");
-        } else {
-            reply_err(id, cmd, "配置文件写入失败，请检查磁盘权限");
-        }
-        free(cfg_path);
+static void h_save_config(cJSON *root, const char *cmd, int id)
+{
+    cJSON *p = j_params(root);
+    char *cfg_path;
+    if (require_idle_reply(id, cmd, "保存设置")) return;
+    apply_config_json(p ? p : root);
+    cfg_path = config_get_default_path();
+    if (config_save(g.config, cfg_path) == 0) {
+        restart_autosave();
+        reply_ok(id, cmd, config_json());
+        push_toast("success", "设置已保存");
+    } else {
+        reply_err(id, cmd, "配置文件写入失败，请检查磁盘权限");
+    }
+    free(cfg_path);
+    return;
+}
+
+
+static void h_fetch_models(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    cJSON *p = j_params(root);
+    if (require_idle_reply(id, cmd, "获取模型列表")) return;
+    /* 允许用户未点保存就取列表：先把当前输入并进 config */
+    if (p) apply_config_json(p);
+    if (check_api_key(id, cmd)) return;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    push_status("正在获取模型列表...");
+    push_busy();
+    if (!launch_thread(th_fetch_models, NULL)) {
+        end_task();
+        reply_err(id, cmd, "无法启动线程");
         return;
     }
-    if (strcmp(cmd, "fetch_models") == 0) {
-        cJSON *p = j_params(root);
-        if (require_idle_reply(id, cmd, "获取模型列表")) return;
-        /* 允许用户未点保存就取列表：先把当前输入并进 config */
-        if (p) apply_config_json(p);
-        if (check_api_key(id, cmd)) return;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        push_status("正在获取模型列表...");
-        push_busy();
-        if (!launch_thread(th_fetch_models, NULL)) {
-            end_task();
-            reply_err(id, cmd, "无法启动线程");
-            return;
-        }
-        accepted = cJSON_CreateObject();
-        cJSON_AddBoolToObject(accepted, "accepted", 1);
-        reply_ok(id, cmd, accepted);
-        return;
+    accepted = cJSON_CreateObject();
+    cJSON_AddBoolToObject(accepted, "accepted", 1);
+    reply_ok(id, cmd, accepted);
+    return;
+}
+
+
+static void h_pick_folder(cJSON *root, const char *cmd, int id)
+{
+    char *picked = pick_folder_dialog(p_str(root, "initial", NULL));
+    if (!picked) { reply_err(id, cmd, "未选择文件夹"); return; }
+    snprintf(g.export_dir, sizeof(g.export_dir), "%s", picked);
+    if (g.config) {
+        free(g.config->export_dir);
+        g.config->export_dir = str_dup(picked);
     }
-    if (strcmp(cmd, "pick_folder") == 0) {
-        char *picked = pick_folder_dialog(p_str(root, "initial", NULL));
-        if (!picked) { reply_err(id, cmd, "未选择文件夹"); return; }
-        snprintf(g.export_dir, sizeof(g.export_dir), "%s", picked);
-        if (g.config) {
-            free(g.config->export_dir);
-            g.config->export_dir = str_dup(picked);
-        }
-        {
-            cJSON *d = cJSON_CreateObject();
-            add_str(d, "path", picked);
-            reply_ok(id, cmd, d);
-        }
-        free(picked);
-        return;
+    {
+        cJSON *d = cJSON_CreateObject();
+        add_str(d, "path", picked);
+        reply_ok(id, cmd, d);
     }
-    if (strcmp(cmd, "pick_project_file") == 0) {
-        char *picked = pick_project_file_dialog(
-            (g.config && g.config->projects_dir) ? g.config->projects_dir : NULL);
-        if (!picked) { reply_err(id, cmd, "未选择文件"); return; }
-        {
-            cJSON *d = cJSON_CreateObject();
-            add_str(d, "path", picked);
-            reply_ok(id, cmd, d);
-        }
-        free(picked);
-        return;
+    free(picked);
+    return;
+}
+
+
+static void h_pick_project_file(cJSON *root, const char *cmd, int id)
+{
+    char *picked = pick_project_file_dialog(
+        (g.config && g.config->projects_dir) ? g.config->projects_dir : NULL);
+    if (!picked) { reply_err(id, cmd, "未选择文件"); return; }
+    {
+        cJSON *d = cJSON_CreateObject();
+        add_str(d, "path", picked);
+        reply_ok(id, cmd, d);
     }
-    if (strcmp(cmd, "pick_text_file") == 0) {
-        char *picked = pick_text_file_dialog();
-        if (!picked) { reply_err(id, cmd, "未选择文件"); return; }
-        {
-            cJSON *d = cJSON_CreateObject();
-            add_str(d, "path", picked);
-            reply_ok(id, cmd, d);
-        }
-        free(picked);
-        return;
+    free(picked);
+    return;
+}
+
+
+static void h_pick_text_file(cJSON *root, const char *cmd, int id)
+{
+    char *picked = pick_text_file_dialog();
+    if (!picked) { reply_err(id, cmd, "未选择文件"); return; }
+    {
+        cJSON *d = cJSON_CreateObject();
+        add_str(d, "path", picked);
+        reply_ok(id, cmd, d);
     }
-    if (strcmp(cmd, "open_path") == 0) {
-        open_path(p_str(root, "path", NULL));
-        reply_ok(id, cmd, NULL);
-        return;
-    }
-    if (strcmp(cmd, "reveal_path") == 0) {
-        const char *path = p_str(root, "path", NULL);
-        if (path && *path) {
-            WCHAR *w = u8_to_w(path);
-            if (w) {
-                /* 参数缓冲必须装得下 /select,"<path>"：路径超长时 swprintf 返回负数，
-                   不能拿残缺参数去开 explorer（P1 截断）。装不下就退化为打开所在目录。 */
-                WCHAR args[MAX_PATH * 2 + 32];
-                int n = swprintf(args, sizeof(args) / sizeof(args[0]), L"/select,\"%s\"", w);
-                if (n > 0) {
-                    ShellExecuteW(g.hwnd, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
-                } else {
-                    ShellExecuteW(g.hwnd, L"open", L"explorer.exe", w, NULL, SW_SHOWNORMAL);
-                }
-                free(w);
+    free(picked);
+    return;
+}
+
+
+static void h_open_path(cJSON *root, const char *cmd, int id)
+{
+    open_path(p_str(root, "path", NULL));
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
+static void h_reveal_path(cJSON *root, const char *cmd, int id)
+{
+    const char *path = p_str(root, "path", NULL);
+    if (path && *path) {
+        WCHAR *w = u8_to_w(path);
+        if (w) {
+            /* 参数缓冲必须装得下 /select,"<path>"：路径超长时 swprintf 返回负数，
+               不能拿残缺参数去开 explorer（P1 截断）。装不下就退化为打开所在目录。 */
+            WCHAR args[MAX_PATH * 2 + 32];
+            int n = swprintf(args, sizeof(args) / sizeof(args[0]), L"/select,\"%s\"", w);
+            if (n > 0) {
+                ShellExecuteW(g.hwnd, L"open", L"explorer.exe", args, NULL, SW_SHOWNORMAL);
+            } else {
+                ShellExecuteW(g.hwnd, L"open", L"explorer.exe", w, NULL, SW_SHOWNORMAL);
             }
+            free(w);
         }
-        reply_ok(id, cmd, NULL);
-        return;
     }
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
 
     /* --- 项目 --- */
-    if (strcmp(cmd, "new_project") == 0) {
-        const char *name = p_str(root, "name", "");
-        const char *idea = p_str(root, "idea", "");
-        if (require_idle_reply(id, cmd, "新建项目")) return;
-        if (!name || !*name) { reply_err(id, cmd, "请输入项目名称"); return; }
-        /* 这一步会销毁当前项目，先把未保存的改动问清楚 */
-        if (need_discard_confirm(root)) { reply_need_discard(id, cmd); return; }
-        if (g.project) { project_destroy(g.project); g.project = NULL; }
-        g.project = project_create(name, idea);
-        if (!g.project) { reply_err(id, cmd, "内存不足，无法创建项目"); return; }
-        g.selected_chapter = -1;
-        g.dirty = 1;
-        g.last_doc[0] = g.last_txt[0] = g.last_epub[0] = '\0';
+static void h_new_project(cJSON *root, const char *cmd, int id)
+{
+    const char *name = p_str(root, "name", "");
+    const char *idea = p_str(root, "idea", "");
+    if (require_idle_reply(id, cmd, "新建项目")) return;
+    if (!name || !*name) { reply_err(id, cmd, "请输入项目名称"); return; }
+    /* 这一步会销毁当前项目，先把未保存的改动问清楚 */
+    if (need_discard_confirm(root)) { reply_need_discard(id, cmd); return; }
+    if (g.project) { project_destroy(g.project); g.project = NULL; }
+    g.project = project_create(name, idea);
+    if (!g.project) { reply_err(id, cmd, "内存不足，无法创建项目"); return; }
+    g.selected_chapter = -1;
+    g.dirty = 1;
+    g.last_doc[0] = g.last_txt[0] = g.last_epub[0] = '\0';
+    reply_ok(id, cmd, project_meta_json(g.project));
+    push_project();
+    push_status("新项目已创建");
+    return;
+}
+
+
+static void h_load_project(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    const char *pid = p_str(root, "id", NULL);
+    const char *ppath = p_str(root, "path", NULL);
+    char full[4096];
+    char *dup;
+    if (require_idle_reply(id, cmd, "加载项目")) return;
+    if (ppath && *ppath) {
+        dup = str_dup(ppath);
+    } else if (pid && *pid && g.config && g.config->projects_dir) {
+        snprintf(full, sizeof(full), "%s\\%s\\project.json", g.config->projects_dir, pid);
+        dup = str_dup(full);
+    } else {
+        reply_err(id, cmd, "缺少项目标识");
+        return;
+    }
+    if (!file_exists(dup)) {
+        free(dup);
+        reply_err(id, cmd, "项目文件不存在");
+        return;
+    }
+    /* 加载完成后会替换掉当前项目（在 handle_task_done 里销毁旧的），
+       所以要在起线程之前先确认未保存的改动 */
+    if (need_discard_confirm(root)) { free(dup); reply_need_discard(id, cmd); return; }
+    if (!try_begin_task()) { free(dup); reply_err(id, cmd, "有任务正在进行"); return; }
+    push_status("正在加载项目...");
+    push_busy();
+    if (!launch_thread(th_load_project, dup)) {
+        free(dup);
+        end_task();
+        reply_err(id, cmd, "无法启动加载线程");
+        return;
+    }
+    accepted = cJSON_CreateObject();
+    cJSON_AddBoolToObject(accepted, "accepted", 1);
+    reply_ok(id, cmd, accepted);
+    return;
+}
+
+
+static void h_save_project(cJSON *root, const char *cmd, int id)
+{
+    const char *name = p_str(root, "name", NULL);
+    if (require_idle_reply(id, cmd, "保存项目")) return;
+    if (!g.project) { reply_err(id, cmd, "没有项目可保存"); return; }
+    if (name) { free(g.project->name); g.project->name = str_dup(name); }
+    if (project_save(g.project, g.config->projects_dir) == 0) {
+        g.dirty = 0;
         reply_ok(id, cmd, project_meta_json(g.project));
-        push_project();
-        push_status("新项目已创建");
-        return;
+        push_toast("success", "项目已保存");
+        push_status("项目保存成功");
+    } else {
+        reply_err(id, cmd, "项目保存失败，请检查 projects 目录是否可写");
     }
-    if (strcmp(cmd, "load_project") == 0) {
-        const char *pid = p_str(root, "id", NULL);
-        const char *ppath = p_str(root, "path", NULL);
-        char full[4096];
-        char *dup;
-        if (require_idle_reply(id, cmd, "加载项目")) return;
-        if (ppath && *ppath) {
-            dup = str_dup(ppath);
-        } else if (pid && *pid && g.config && g.config->projects_dir) {
-            snprintf(full, sizeof(full), "%s\\%s\\project.json", g.config->projects_dir, pid);
-            dup = str_dup(full);
-        } else {
-            reply_err(id, cmd, "缺少项目标识");
-            return;
-        }
-        if (!file_exists(dup)) {
-            free(dup);
-            reply_err(id, cmd, "项目文件不存在");
-            return;
-        }
-        /* 加载完成后会替换掉当前项目（在 handle_task_done 里销毁旧的），
-           所以要在起线程之前先确认未保存的改动 */
-        if (need_discard_confirm(root)) { free(dup); reply_need_discard(id, cmd); return; }
-        if (!try_begin_task()) { free(dup); reply_err(id, cmd, "有任务正在进行"); return; }
-        push_status("正在加载项目...");
-        push_busy();
-        if (!launch_thread(th_load_project, dup)) {
-            free(dup);
-            end_task();
-            reply_err(id, cmd, "无法启动加载线程");
-            return;
-        }
-        accepted = cJSON_CreateObject();
-        cJSON_AddBoolToObject(accepted, "accepted", 1);
-        reply_ok(id, cmd, accepted);
-        return;
-    }
-    if (strcmp(cmd, "save_project") == 0) {
-        const char *name = p_str(root, "name", NULL);
-        if (require_idle_reply(id, cmd, "保存项目")) return;
-        if (!g.project) { reply_err(id, cmd, "没有项目可保存"); return; }
-        if (name) { free(g.project->name); g.project->name = str_dup(name); }
-        if (project_save(g.project, g.config->projects_dir) == 0) {
-            g.dirty = 0;
-            reply_ok(id, cmd, project_meta_json(g.project));
-            push_toast("success", "项目已保存");
-            push_status("项目保存成功");
-        } else {
-            reply_err(id, cmd, "项目保存失败，请检查 projects 目录是否可写");
-        }
-        return;
-    }
-    if (strcmp(cmd, "set_project_name") == 0) {
-        const char *name = p_str(root, "name", "");
-        if (require_idle_reply(id, cmd, "修改项目名称")) return;
-        if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
-        free(g.project->name);
-        g.project->name = str_dup(name ? name : "");
-        g.dirty = 1;
-        reply_ok(id, cmd, NULL);
-        return;
-    }
-    if (strcmp(cmd, "set_project_idea") == 0) {
-        const char *idea = p_str(root, "idea", "");
-        if (require_idle_reply(id, cmd, "修改创意")) return;
-        if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
-        free(g.project->seed_idea);
-        g.project->seed_idea = str_dup(idea ? idea : "");
-        g.dirty = 1;
-        reply_ok(id, cmd, NULL);
-        return;
-    }
+    return;
+}
+
+
+static void h_set_project_name(cJSON *root, const char *cmd, int id)
+{
+    const char *name = p_str(root, "name", "");
+    if (require_idle_reply(id, cmd, "修改项目名称")) return;
+    if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
+    free(g.project->name);
+    g.project->name = str_dup(name ? name : "");
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
+static void h_set_project_idea(cJSON *root, const char *cmd, int id)
+{
+    const char *idea = p_str(root, "idea", "");
+    if (require_idle_reply(id, cmd, "修改创意")) return;
+    if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
+    free(g.project->seed_idea);
+    g.project->seed_idea = str_dup(idea ? idea : "");
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
 
     /* --- 编辑章节 / 方案 / 世界观 / 人物 --- */
-    if (strcmp(cmd, "set_chapter") == 0) {
-        int idx = p_int(root, "index", -1);
-        if (require_idle_reply(id, cmd, "编辑章节")) return;
-        if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
-            reply_err(id, cmd, "章节不存在");
-            return;
-        }
-        {
-            chapter_t *c = &g.project->chapters[idx];
-            const char *t = j_str(j_params(root), "title", NULL);
-            const char *s = j_str(j_params(root), "summary", NULL);
-            const char *ct = j_str(j_params(root), "content", NULL);
-            if (t) { free(c->title);  c->title  = str_dup(t); }
-            if (s) { free(c->summary); c->summary = str_dup(s); }
-            if (ct != NULL) {
-                free(c->content);
-                c->content = str_dup(ct);
-                c->word_count = (int)utf8_char_count(ct);
-            }
-            project_calc_total_words(g.project);
-            g.dirty = 1;
-            reply_ok(id, cmd, NULL);
-            push_project();
-        }
+static void h_set_chapter(cJSON *root, const char *cmd, int id)
+{
+    int idx = p_int(root, "index", -1);
+    if (require_idle_reply(id, cmd, "编辑章节")) return;
+    if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
+        reply_err(id, cmd, "章节不存在");
         return;
     }
-    if (strcmp(cmd, "set_plan") == 0) {
-        int idx = p_int(root, "index", -1);
-        if (require_idle_reply(id, cmd, "编辑方案")) return;
-        if (!g.project || idx < 0 || idx >= g.project->plan_count) {
-            reply_err(id, cmd, "方案不存在");
-            return;
+    {
+        chapter_t *c = &g.project->chapters[idx];
+        const char *t = j_str(j_params(root), "title", NULL);
+        const char *s = j_str(j_params(root), "summary", NULL);
+        const char *ct = j_str(j_params(root), "content", NULL);
+        if (t) { free(c->title);  c->title  = str_dup(t); }
+        if (s) { free(c->summary); c->summary = str_dup(s); }
+        if (ct != NULL) {
+            free(c->content);
+            c->content = str_dup(ct);
+            c->word_count = (int)utf8_char_count(ct);
         }
-        {
-            novel_plan_t *pl = &g.project->plans[idx];
-            const char *t = j_str(j_params(root), "title", NULL);
-            const char *s = j_str(j_params(root), "synopsis", NULL);
-            const char *o = j_str(j_params(root), "outline", NULL);
-            if (t) { free(pl->title);    pl->title = str_dup(t); }
-            if (s) { free(pl->synopsis); pl->synopsis = str_dup(s); }
-            if (o) { free(pl->outline);  pl->outline = str_dup(o); }
-            g.dirty = 1;
-            reply_ok(id, cmd, NULL);
-            push_project();
-        }
-        return;
-    }
-    if (strcmp(cmd, "set_world") == 0) {
-        cJSON *p = j_params(root);
-        if (require_idle_reply(id, cmd, "编辑世界观")) return;
-        if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
-        {
-            const char *wt = j_str(p, "worldType", NULL);
-            const char *se = j_str(p, "setting", NULL);
-            const char *ps = j_str(p, "powerSystem", NULL);
-            const char *ge = j_str(p, "geography", NULL);
-            const char *hi = j_str(p, "history", NULL);
-            project_set_world(g.project, wt, se, ps);
-            /* geography / history 业务层没有 setter，这里直接写公开字段 */
-            if (ge) { free(g.project->world.geography); g.project->world.geography = str_dup(ge); }
-            if (hi) { free(g.project->world.history);   g.project->world.history   = str_dup(hi); }
-            g.dirty = 1;
-            reply_ok(id, cmd, NULL);
-            push_project();
-        }
-        return;
-    }
-    if (strcmp(cmd, "set_characters") == 0) {
-        cJSON *p = j_params(root);
-        cJSON *arr = p ? cJSON_GetObjectItemCaseSensitive(p, "characters") : NULL;
-        if (require_idle_reply(id, cmd, "编辑人物")) return;
-        if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
-        if (!arr || !cJSON_IsArray(arr)) { reply_err(id, cmd, "人物数据格式错误"); return; }
-        /* 整体替换：复用业务层的 clear + add，避免自行操作容量字段 */
-        project_clear_characters(g.project);
-        {
-            int n = cJSON_GetArraySize(arr), i;
-            for (i = 0; i < n; i++) {
-                cJSON *c = cJSON_GetArrayItem(arr, i);
-                if (!c) continue;
-                project_add_character(g.project,
-                    j_str(c, "name", ""), j_str(c, "role", ""),
-                    j_str(c, "description", ""), j_str(c, "traits", ""),
-                    j_str(c, "background", ""));
-            }
-        }
+        project_calc_total_words(g.project);
         g.dirty = 1;
         reply_ok(id, cmd, NULL);
         push_project();
+    }
+    return;
+}
+
+
+static void h_set_plan(cJSON *root, const char *cmd, int id)
+{
+    int idx = p_int(root, "index", -1);
+    if (require_idle_reply(id, cmd, "编辑方案")) return;
+    if (!g.project || idx < 0 || idx >= g.project->plan_count) {
+        reply_err(id, cmd, "方案不存在");
         return;
     }
-    if (strcmp(cmd, "select_direction") == 0) {
-        int idx = p_int(root, "index", -1);
-        if (require_idle_reply(id, cmd, "选择方向")) return;
-        if (!g.project || idx < 0 || idx >= g.project->direction_count) {
-            reply_err(id, cmd, "方向不存在");
-            return;
-        }
-        project_select_direction(g.project, idx);
+    {
+        novel_plan_t *pl = &g.project->plans[idx];
+        const char *t = j_str(j_params(root), "title", NULL);
+        const char *s = j_str(j_params(root), "synopsis", NULL);
+        const char *o = j_str(j_params(root), "outline", NULL);
+        if (t) { free(pl->title);    pl->title = str_dup(t); }
+        if (s) { free(pl->synopsis); pl->synopsis = str_dup(s); }
+        if (o) { free(pl->outline);  pl->outline = str_dup(o); }
         g.dirty = 1;
         reply_ok(id, cmd, NULL);
         push_project();
-        push_status("已选定方向，可继续生成方案");
-        return;
     }
-    if (strcmp(cmd, "select_plan") == 0) {
-        int idx = p_int(root, "index", -1);
-        if (require_idle_reply(id, cmd, "选择方案")) return;
-        if (!g.project || idx < 0 || idx >= g.project->plan_count) {
-            reply_err(id, cmd, "方案不存在");
-            return;
-        }
-        project_select_plan(g.project, idx);
+    return;
+}
+
+
+static void h_set_world(cJSON *root, const char *cmd, int id)
+{
+    cJSON *p = j_params(root);
+    if (require_idle_reply(id, cmd, "编辑世界观")) return;
+    if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
+    {
+        const char *wt = j_str(p, "worldType", NULL);
+        const char *se = j_str(p, "setting", NULL);
+        const char *ps = j_str(p, "powerSystem", NULL);
+        const char *ge = j_str(p, "geography", NULL);
+        const char *hi = j_str(p, "history", NULL);
+        project_set_world(g.project, wt, se, ps);
+        /* geography / history 业务层没有 setter，这里直接写公开字段 */
+        if (ge) { free(g.project->world.geography); g.project->world.geography = str_dup(ge); }
+        if (hi) { free(g.project->world.history);   g.project->world.history   = str_dup(hi); }
         g.dirty = 1;
         reply_ok(id, cmd, NULL);
         push_project();
-        push_status("已选定方案，可继续细化大纲");
+    }
+    return;
+}
+
+
+static void h_set_characters(cJSON *root, const char *cmd, int id)
+{
+    cJSON *p = j_params(root);
+    cJSON *arr = p ? cJSON_GetObjectItemCaseSensitive(p, "characters") : NULL;
+    if (require_idle_reply(id, cmd, "编辑人物")) return;
+    if (!g.project) { reply_err(id, cmd, "没有项目"); return; }
+    if (!arr || !cJSON_IsArray(arr)) { reply_err(id, cmd, "人物数据格式错误"); return; }
+    /* 整体替换：复用业务层的 clear + add，避免自行操作容量字段 */
+    project_clear_characters(g.project);
+    {
+        int n = cJSON_GetArraySize(arr), i;
+        for (i = 0; i < n; i++) {
+            cJSON *c = cJSON_GetArrayItem(arr, i);
+            if (!c) continue;
+            project_add_character(g.project,
+                j_str(c, "name", ""), j_str(c, "role", ""),
+                j_str(c, "description", ""), j_str(c, "traits", ""),
+                j_str(c, "background", ""));
+        }
+    }
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    push_project();
+    return;
+}
+
+
+static void h_select_direction(cJSON *root, const char *cmd, int id)
+{
+    int idx = p_int(root, "index", -1);
+    if (require_idle_reply(id, cmd, "选择方向")) return;
+    if (!g.project || idx < 0 || idx >= g.project->direction_count) {
+        reply_err(id, cmd, "方向不存在");
         return;
     }
-    if (strcmp(cmd, "export") == 0) {
-        const char *dir = p_str(root, "dir", NULL);
-        if (require_idle_reply(id, cmd, "导出")) return;
-        if (!g.project || g.project->chapter_count == 0) {
-            reply_err(id, cmd, "没有可导出的章节，请先细化大纲或写入章节内容");
-            return;
-        }
-        if (do_export(dir) == 0) {
-            cJSON *d = cJSON_CreateObject();
-            add_str(d, "doc", g.last_doc);
-            add_str(d, "txt", g.last_txt);
-            add_str(d, "epub", g.last_epub);   /* 支线 B */
-            reply_ok(id, cmd, d);
-            push_toast("success", "已导出 DOC / TXT / EPUB");
-            push_status("已导出 DOC/TXT/EPUB");
-        } else {
-            reply_err(id, cmd, "导出失败，请检查输出目录是否可写");
-        }
+    project_select_direction(g.project, idx);
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    push_project();
+    push_status("已选定方向，可继续生成方案");
+    return;
+}
+
+
+static void h_select_plan(cJSON *root, const char *cmd, int id)
+{
+    int idx = p_int(root, "index", -1);
+    if (require_idle_reply(id, cmd, "选择方案")) return;
+    if (!g.project || idx < 0 || idx >= g.project->plan_count) {
+        reply_err(id, cmd, "方案不存在");
         return;
     }
+    project_select_plan(g.project, idx);
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    push_project();
+    push_status("已选定方案，可继续细化大纲");
+    return;
+}
+
+
+static void h_export(cJSON *root, const char *cmd, int id)
+{
+    const char *dir = p_str(root, "dir", NULL);
+    if (require_idle_reply(id, cmd, "导出")) return;
+    if (!g.project || g.project->chapter_count == 0) {
+        reply_err(id, cmd, "没有可导出的章节，请先细化大纲或写入章节内容");
+        return;
+    }
+    if (do_export(dir) == 0) {
+        cJSON *d = cJSON_CreateObject();
+        add_str(d, "doc", g.last_doc);
+        add_str(d, "txt", g.last_txt);
+        add_str(d, "epub", g.last_epub);   /* 支线 B */
+        reply_ok(id, cmd, d);
+        push_toast("success", "已导出 DOC / TXT / EPUB");
+        push_status("已导出 DOC/TXT/EPUB");
+    } else {
+        reply_err(id, cmd, "导出失败，请检查输出目录是否可写");
+    }
+    return;
+}
+
+
 
     /* --- 生成类（异步） --- */
 #define ACCEPT_ASYNC                                                                \
@@ -950,476 +1049,621 @@ void cmd_dispatch(cJSON *root)
         push_busy();                                                                \
     } while (0)
 
-    if (strcmp(cmd, "gen_directions") == 0) {
-        gen_dir_task_t *t;
-        int iters = p_int(root, "iterations", 2);
-        int count = p_int(root, "count", 5);
-        if (require_idle_reply(id, cmd, "生成创作方向")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (iters < 1) iters = 1;
-        if (iters > 6) iters = 6;
-        if (count < 1) count = 5;
-        if (count > 20) count = 20;
-        /* 生成前把最新创意写回项目 */
-        {
-            const char *idea = p_str(root, "idea", NULL);
-            if (idea) { free(g.project->seed_idea); g.project->seed_idea = str_dup(idea); }
-        }
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        t = (gen_dir_task_t *)malloc(sizeof(gen_dir_task_t));
-        if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
-        t->iterations = iters;
-        t->count = count;
-        engine_clear_cancel(g.engine);
-        push_status("正在生成创作方向...");
-        if (!launch_thread(th_gen_directions, t)) {
-            free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
+static void h_gen_directions(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    gen_dir_task_t *t;
+    int iters = p_int(root, "iterations", 2);
+    int count = p_int(root, "count", 5);
+    if (require_idle_reply(id, cmd, "生成创作方向")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (iters < 1) iters = 1;
+    if (iters > 6) iters = 6;
+    if (count < 1) count = 5;
+    if (count > 20) count = 20;
+    /* 生成前把最新创意写回项目 */
+    {
+        const char *idea = p_str(root, "idea", NULL);
+        if (idea) { free(g.project->seed_idea); g.project->seed_idea = str_dup(idea); }
+    }
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    t = (gen_dir_task_t *)malloc(sizeof(gen_dir_task_t));
+    if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
+    t->iterations = iters;
+    t->count = count;
+    engine_clear_cancel(g.engine);
+    push_status("正在生成创作方向...");
+    if (!launch_thread(th_gen_directions, t)) {
+        free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_gen_plans(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    int count = p_int(root, "count", 3);
+    if (require_idle_reply(id, cmd, "生成方案")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (!g.project->selected_direction) { reply_err(id, cmd, "请先选定一个创作方向"); return; }
+    if (count < 1) count = 3;
+    if (count > 10) count = 10;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在生成小说方案...");
+    if (!launch_thread(th_gen_plans, (LPVOID)(INT_PTR)count)) {
+        end_task(); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_expand_outline(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    int count = p_int(root, "count", 20);
+    if (require_idle_reply(id, cmd, "细化大纲")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (!g.project->selected_plan) { reply_err(id, cmd, "请先选定一个小说方案"); return; }
+    if (count < 3) count = 20;
+    if (count > 50) count = 50;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在细化大纲...");
+    if (!launch_thread(th_expand_outline, (LPVOID)(INT_PTR)count)) {
+        end_task(); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_expand_chapter(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    ch_task_t *t;
+    int idx = p_int(root, "index", -1);
+    int words = p_int(root, "words", 2000);
+    if (require_idle_reply(id, cmd, "扩写章节")) return;
+    if (check_api_key(id, cmd)) return;
+    if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
+        reply_err(id, cmd, "请先选择一个章节");
         return;
     }
-    if (strcmp(cmd, "gen_plans") == 0) {
-        int count = p_int(root, "count", 3);
-        if (require_idle_reply(id, cmd, "生成方案")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (!g.project->selected_direction) { reply_err(id, cmd, "请先选定一个创作方向"); return; }
-        if (count < 1) count = 3;
-        if (count > 10) count = 10;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在生成小说方案...");
-        if (!launch_thread(th_gen_plans, (LPVOID)(INT_PTR)count)) {
-            end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
+    if (words < 200) words = 2000;
+    if (words > 20000) words = 20000;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    t = (ch_task_t *)malloc(sizeof(ch_task_t));
+    if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
+    t->index = idx; t->words = words;
+    engine_clear_cancel(g.engine);
+    push_status("正在扩写本章...");
+    if (!launch_thread(th_expand_chapter, t)) {
+        free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_expand_all(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    expand_all_task_t *t;
+    int words = p_int(root, "words", 2000);
+    int force = p_int(root, "force", 0);
+    if (require_idle_reply(id, cmd, "批量扩写")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (g.project->chapter_count == 0) { reply_err(id, cmd, "没有章节可扩写"); return; }
+    if (words < 200) words = 2000;
+    if (words > 20000) words = 20000;
+    t = (expand_all_task_t *)malloc(sizeof(expand_all_task_t));
+    if (!t) { reply_err(id, cmd, "内存不足"); return; }
+    t->words = words;
+    t->force = force ? 1 : 0;
+    if (!try_begin_task()) { free(t); reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在批量扩写...");
+    if (!launch_thread(th_expand_all, t)) {
+        free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_step_write(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    ch_task_t *t;
+    int words = p_int(root, "words", 2000);
+    int start = -1, i;
+    if (require_idle_reply(id, cmd, "逐章生成")) return;
+    if (check_api_key(id, cmd)) return;
+    if (!g.project || g.project->chapter_count == 0) {
+        reply_err(id, cmd, "没有章节可生成，请先在「大纲」页细化大纲");
         return;
     }
-    if (strcmp(cmd, "expand_outline") == 0) {
-        int count = p_int(root, "count", 20);
-        if (require_idle_reply(id, cmd, "细化大纲")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (!g.project->selected_plan) { reply_err(id, cmd, "请先选定一个小说方案"); return; }
-        if (count < 3) count = 20;
-        if (count > 50) count = 50;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在细化大纲...");
-        if (!launch_thread(th_expand_outline, (LPVOID)(INT_PTR)count)) {
-            end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
+    for (i = 0; i < g.project->chapter_count; i++) {
+        chapter_t *c = &g.project->chapters[i];
+        if (!c->content || !*c->content) { start = i; break; }
+    }
+    if (start < 0) { reply_err(id, cmd, "所有章节均已写完；如需重写某一章，请选中该章后点「扩写本章」"); return; }
+    if (words < 200) words = 2000;
+    if (words > 20000) words = 20000;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    t = (ch_task_t *)malloc(sizeof(ch_task_t));
+    if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
+    t->index = start; t->words = words;
+    engine_clear_cancel(g.engine);
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "逐章生成：正在生成第 %d 章...", start + 1);
+        push_status(msg);
+    }
+    if (!launch_thread(th_step_write, t)) {
+        free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_check_consistency(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    int idx = p_int(root, "index", -1);
+    if (require_idle_reply(id, cmd, "一致性检查")) return;
+    if (check_api_key(id, cmd)) return;
+    if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
+        reply_err(id, cmd, "请先选择一个章节");
         return;
     }
-    if (strcmp(cmd, "expand_chapter") == 0) {
-        ch_task_t *t;
-        int idx = p_int(root, "index", -1);
-        int words = p_int(root, "words", 2000);
-        if (require_idle_reply(id, cmd, "扩写章节")) return;
-        if (check_api_key(id, cmd)) return;
-        if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
-            reply_err(id, cmd, "请先选择一个章节");
-            return;
-        }
-        if (words < 200) words = 2000;
-        if (words > 20000) words = 20000;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        t = (ch_task_t *)malloc(sizeof(ch_task_t));
-        if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
-        t->index = idx; t->words = words;
-        engine_clear_cancel(g.engine);
-        push_status("正在扩写本章...");
-        if (!launch_thread(th_expand_chapter, t)) {
-            free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在进行一致性检查...");
+    if (!launch_thread(th_check_consistency, (LPVOID)(INT_PTR)idx)) {
+        end_task(); reply_err(id, cmd, "无法启动线程"); return;
     }
-    if (strcmp(cmd, "expand_all") == 0) {
-        expand_all_task_t *t;
-        int words = p_int(root, "words", 2000);
-        int force = p_int(root, "force", 0);
-        if (require_idle_reply(id, cmd, "批量扩写")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (g.project->chapter_count == 0) { reply_err(id, cmd, "没有章节可扩写"); return; }
-        if (words < 200) words = 2000;
-        if (words > 20000) words = 20000;
-        t = (expand_all_task_t *)malloc(sizeof(expand_all_task_t));
-        if (!t) { reply_err(id, cmd, "内存不足"); return; }
-        t->words = words;
-        t->force = force ? 1 : 0;
-        if (!try_begin_task()) { free(t); reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在批量扩写...");
-        if (!launch_thread(th_expand_all, t)) {
-            free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_summarize_worldview(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    if (require_idle_reply(id, cmd, "总结世界观")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在总结世界观...");
+    if (!launch_thread(th_sum_world, NULL)) {
+        end_task(); reply_err(id, cmd, "无法启动线程"); return;
     }
-    if (strcmp(cmd, "step_write") == 0) {
-        ch_task_t *t;
-        int words = p_int(root, "words", 2000);
-        int start = -1, i;
-        if (require_idle_reply(id, cmd, "逐章生成")) return;
-        if (check_api_key(id, cmd)) return;
-        if (!g.project || g.project->chapter_count == 0) {
-            reply_err(id, cmd, "没有章节可生成，请先在「大纲」页细化大纲");
-            return;
-        }
-        for (i = 0; i < g.project->chapter_count; i++) {
-            chapter_t *c = &g.project->chapters[i];
-            if (!c->content || !*c->content) { start = i; break; }
-        }
-        if (start < 0) { reply_err(id, cmd, "所有章节均已写完；如需重写某一章，请选中该章后点「扩写本章」"); return; }
-        if (words < 200) words = 2000;
-        if (words > 20000) words = 20000;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        t = (ch_task_t *)malloc(sizeof(ch_task_t));
-        if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
-        t->index = start; t->words = words;
-        engine_clear_cancel(g.engine);
-        {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "逐章生成：正在生成第 %d 章...", start + 1);
-            push_status(msg);
-        }
-        if (!launch_thread(th_step_write, t)) {
-            free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_generate_characters(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    if (require_idle_reply(id, cmd, "生成人物")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在根据小说内容生成人物草稿...");
+    if (!launch_thread(th_gen_chars, NULL)) {
+        end_task(); reply_err(id, cmd, "无法启动线程"); return;
     }
-    if (strcmp(cmd, "check_consistency") == 0) {
-        int idx = p_int(root, "index", -1);
-        if (require_idle_reply(id, cmd, "一致性检查")) return;
-        if (check_api_key(id, cmd)) return;
-        if (!g.project || idx < 0 || idx >= g.project->chapter_count) {
-            reply_err(id, cmd, "请先选择一个章节");
-            return;
-        }
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在进行一致性检查...");
-        if (!launch_thread(th_check_consistency, (LPVOID)(INT_PTR)idx)) {
-            end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_check_finale(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    if (require_idle_reply(id, cmd, "伏笔回收校验")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在做伏笔回收校验...");
+    if (!launch_thread(th_check_finale, NULL)) {
+        end_task(); reply_err(id, cmd, "无法启动线程"); return;
     }
-    if (strcmp(cmd, "summarize_worldview") == 0) {
-        if (require_idle_reply(id, cmd, "总结世界观")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在总结世界观...");
-        if (!launch_thread(th_sum_world, NULL)) {
-            end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_analyze_text(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    const char *text = p_str(root, "text", NULL);
+    char *dup = str_dup(text ? text : "");
+    if (require_idle_reply(id, cmd, "分析文本")) { free(dup); return; }
+    if (check_api_key(id, cmd)) { free(dup); return; }
+    if (check_project(id, cmd)) { free(dup); return; }
+    if (!dup) { reply_err(id, cmd, "内存不足"); return; }
+    if (!try_begin_task()) { free(dup); reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在分析文本...");
+    if (!launch_thread(th_analyze_text, dup)) {
+        free(dup); end_task(); reply_err(id, cmd, "无法启动线程"); return;
     }
-    if (strcmp(cmd, "generate_characters") == 0) {
-        if (require_idle_reply(id, cmd, "生成人物")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在根据小说内容生成人物草稿...");
-        if (!launch_thread(th_gen_chars, NULL)) {
-            end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
+    ACCEPT_ASYNC;
+    return;
+}
+
+
+static void h_auto_write(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    auto_task_t *t;
+    int dirs = p_int(root, "dirCount", 5);
+    int plans = p_int(root, "planCount", 3);
+    int chs = p_int(root, "chapters", 20);
+    int words = p_int(root, "words", 3000);
+    int start_ch = p_int(root, "startChapter", 0);
+    if (require_idle_reply(id, cmd, "全自动写作")) return;
+    if (check_api_key(id, cmd)) return;
+    if (dirs < 1) dirs = 5;
+    if (dirs > 20) dirs = 20;
+    if (plans < 1) plans = 3;
+    if (plans > 10) plans = 10;
+    if (chs < 3) chs = 20;
+    if (chs > 50) chs = 50;
+    if (words < 200) words = 3000;
+    if (words > 20000) words = 20000;
+    if (start_ch < 0) start_ch = 0;
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    t = (auto_task_t *)malloc(sizeof(auto_task_t));
+    if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
+    t->dirs = dirs; t->plans = plans; t->chapters = chs; t->words = words; t->start_ch = start_ch;
+    engine_clear_cancel(g.engine);
+    push_status("开始全自动写作...");
+    if (!launch_thread(th_auto_write, t)) {
+        free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
     }
-    if (strcmp(cmd, "check_finale") == 0) {
-        if (require_idle_reply(id, cmd, "伏笔回收校验")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在做伏笔回收校验...");
-        if (!launch_thread(th_check_finale, NULL)) {
-            end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
-    }
-    if (strcmp(cmd, "analyze_text") == 0) {
-        const char *text = p_str(root, "text", NULL);
-        char *dup = str_dup(text ? text : "");
-        if (require_idle_reply(id, cmd, "分析文本")) { free(dup); return; }
-        if (check_api_key(id, cmd)) { free(dup); return; }
-        if (check_project(id, cmd)) { free(dup); return; }
-        if (!dup) { reply_err(id, cmd, "内存不足"); return; }
-        if (!try_begin_task()) { free(dup); reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在分析文本...");
-        if (!launch_thread(th_analyze_text, dup)) {
-            free(dup); end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
-    }
-    if (strcmp(cmd, "auto_write") == 0) {
-        auto_task_t *t;
-        int dirs = p_int(root, "dirCount", 5);
-        int plans = p_int(root, "planCount", 3);
-        int chs = p_int(root, "chapters", 20);
-        int words = p_int(root, "words", 3000);
-        int start_ch = p_int(root, "startChapter", 0);
-        if (require_idle_reply(id, cmd, "全自动写作")) return;
-        if (check_api_key(id, cmd)) return;
-        if (dirs < 1) dirs = 5;
-        if (dirs > 20) dirs = 20;
-        if (plans < 1) plans = 3;
-        if (plans > 10) plans = 10;
-        if (chs < 3) chs = 20;
-        if (chs > 50) chs = 50;
-        if (words < 200) words = 3000;
-        if (words > 20000) words = 20000;
-        if (start_ch < 0) start_ch = 0;
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        t = (auto_task_t *)malloc(sizeof(auto_task_t));
-        if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
-        t->dirs = dirs; t->plans = plans; t->chapters = chs; t->words = words; t->start_ch = start_ch;
-        engine_clear_cancel(g.engine);
-        push_status("开始全自动写作...");
-        if (!launch_thread(th_auto_write, t)) {
-            free(t); end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        ACCEPT_ASYNC;
-        return;
-    }
+    ACCEPT_ASYNC;
+    return;
+}
+
+
 #undef ACCEPT_ASYNC
 
-    if (strcmp(cmd, "import_txt") == 0) {
-        const char *path = p_str(root, "path", NULL);
-        char *text;
-        if (require_idle_reply(id, cmd, "导入文本")) return;
-        if (check_api_key(id, cmd)) return;
-        if (check_project(id, cmd)) return;
-        if (!path || !*path) { reply_err(id, cmd, "缺少文件路径"); return; }
-        text = read_text_file_smart(path, 4 * 1024 * 1024);
-        if (!text || !*text) {
-            free(text);
-            reply_err(id, cmd, "文件读取失败或内容为空（仅支持 txt，最大 4MB）");
-            return;
-        }
-        if (!try_begin_task()) { free(text); reply_err(id, cmd, "有任务正在进行"); return; }
-        engine_clear_cancel(g.engine);
-        push_status("正在分析导入的文本...");
-        if (!launch_thread(th_analyze_text, text)) {
-            free(text); end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        {
-            cJSON *a = cJSON_CreateObject();
-            cJSON_AddBoolToObject(a, "accepted", 1);
-            reply_ok(id, cmd, a);
-            push_busy();
-        }
+static void h_import_txt(cJSON *root, const char *cmd, int id)
+{
+    const char *path = p_str(root, "path", NULL);
+    char *text;
+    if (require_idle_reply(id, cmd, "导入文本")) return;
+    if (check_api_key(id, cmd)) return;
+    if (check_project(id, cmd)) return;
+    if (!path || !*path) { reply_err(id, cmd, "缺少文件路径"); return; }
+    text = read_text_file_smart(path, 4 * 1024 * 1024);
+    if (!text || !*text) {
+        free(text);
+        reply_err(id, cmd, "文件读取失败或内容为空（仅支持 txt，最大 4MB）");
         return;
     }
-    if (strcmp(cmd, "ai_call") == 0) {
-        const char *sys = p_str(root, "system", "");
-        const char *usr = p_str(root, "user", "");
-        ai_call_task_t *t;
-        if (require_idle_reply(id, cmd, "AI 调用")) return;
-        if (check_api_key(id, cmd)) return;
-        if (!usr || !*usr) { reply_err(id, cmd, "缺少 user 提示词"); return; }
-        if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
-        t = (ai_call_task_t *)malloc(sizeof(ai_call_task_t));
-        if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
-        t->system_prompt = str_dup(sys ? sys : "");
-        t->user_prompt = str_dup(usr);
-        if (!t->system_prompt || !t->user_prompt) {
-            free(t->system_prompt); free(t->user_prompt); free(t);
-            end_task(); reply_err(id, cmd, "内存不足"); return;
-        }
-        engine_clear_cancel(g.engine);
-        if (!launch_thread(th_ai_call, t)) {
-            free(t->system_prompt); free(t->user_prompt); free(t);
-            end_task(); reply_err(id, cmd, "无法启动线程"); return;
-        }
-        /* ACCEPT_ASYNC 宏在 dispatch 尾部已 #undef，这里展开写 */
-        accepted = cJSON_CreateObject();
-        cJSON_AddBoolToObject(accepted, "accepted", 1);
-        reply_ok(id, cmd, accepted);
+    if (!try_begin_task()) { free(text); reply_err(id, cmd, "有任务正在进行"); return; }
+    engine_clear_cancel(g.engine);
+    push_status("正在分析导入的文本...");
+    if (!launch_thread(th_analyze_text, text)) {
+        free(text); end_task(); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    {
+        cJSON *a = cJSON_CreateObject();
+        cJSON_AddBoolToObject(a, "accepted", 1);
+        reply_ok(id, cmd, a);
         push_busy();
-        return;
     }
-    if (strcmp(cmd, "get_gal") == 0) {
-        /* busy 时 worker 线程正在读写 gal_json（project_save 序列化 "gal" 键），
-           读快照也要过门闩，否则与 set_gal 的 free/替换 交错成 UAF */
-        if (require_idle_reply(id, cmd, "读取剧情分支")) return;
-        cJSON *d = cJSON_CreateObject();
-        add_str(d, "gal", (g.project && g.project->gal_json) ? g.project->gal_json : "{}");
-        reply_ok(id, cmd, d);
-        return;
+    return;
+}
+
+
+static void h_ai_call(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    const char *sys = p_str(root, "system", "");
+    const char *usr = p_str(root, "user", "");
+    ai_call_task_t *t;
+    if (require_idle_reply(id, cmd, "AI 调用")) return;
+    if (check_api_key(id, cmd)) return;
+    if (!usr || !*usr) { reply_err(id, cmd, "缺少 user 提示词"); return; }
+    if (!try_begin_task()) { reply_err(id, cmd, "有任务正在进行"); return; }
+    t = (ai_call_task_t *)malloc(sizeof(ai_call_task_t));
+    if (!t) { end_task(); reply_err(id, cmd, "内存不足"); return; }
+    t->system_prompt = str_dup(sys ? sys : "");
+    t->user_prompt = str_dup(usr);
+    if (!t->system_prompt || !t->user_prompt) {
+        free(t->system_prompt); free(t->user_prompt); free(t);
+        end_task(); reply_err(id, cmd, "内存不足"); return;
     }
-    if (strcmp(cmd, "set_gal") == 0) {
-        const char *js = p_str(root, "json", NULL);
-        if (require_idle_reply(id, cmd, "保存剧情分支")) return;
-        if (check_project(id, cmd)) return;
-        if (!js) { reply_err(id, cmd, "缺少 json"); return; }
-        {
-            /* 先 dup 判空再换指针：str_dup 失败时 gal_json 被置 NULL = 静默丢剧情存档 */
-            char *copy = str_dup(js);
-            if (!copy) { reply_err(id, cmd, "内存不足"); return; }
-            free(g.project->gal_json);
-            g.project->gal_json = copy;
-        }
-        g.dirty = 1;
-        reply_ok(id, cmd, NULL);
-        return;
+    engine_clear_cancel(g.engine);
+    if (!launch_thread(th_ai_call, t)) {
+        free(t->system_prompt); free(t->user_prompt); free(t);
+        end_task(); reply_err(id, cmd, "无法启动线程"); return;
     }
-    if (strcmp(cmd, "comfy_test") == 0) {
-        /* 连通测试：不占忙闲位（可与 AI 任务并行），结果走 comfy_done 事件 */
-        const char *url = p_str(root, "url", NULL);
-        char *copy;
-        if (!url || !*url) url = (g.config && g.config->comfy_url) ? g.config->comfy_url : "";
-        copy = str_dup(url);
+    /* ACCEPT_ASYNC 宏在 dispatch 尾部已 #undef，这里展开写 */
+    accepted = cJSON_CreateObject();
+    cJSON_AddBoolToObject(accepted, "accepted", 1);
+    reply_ok(id, cmd, accepted);
+    push_busy();
+    return;
+}
+
+
+static void h_get_gal(cJSON *root, const char *cmd, int id)
+{
+    /* busy 时 worker 线程正在读写 gal_json（project_save 序列化 "gal" 键），
+       读快照也要过门闩，否则与 set_gal 的 free/替换 交错成 UAF */
+    if (require_idle_reply(id, cmd, "读取剧情分支")) return;
+    cJSON *d = cJSON_CreateObject();
+    add_str(d, "gal", (g.project && g.project->gal_json) ? g.project->gal_json : "{}");
+    reply_ok(id, cmd, d);
+    return;
+}
+
+
+static void h_set_gal(cJSON *root, const char *cmd, int id)
+{
+    const char *js = p_str(root, "json", NULL);
+    if (require_idle_reply(id, cmd, "保存剧情分支")) return;
+    if (check_project(id, cmd)) return;
+    if (!js) { reply_err(id, cmd, "缺少 json"); return; }
+    {
+        /* 先 dup 判空再换指针：str_dup 失败时 gal_json 被置 NULL = 静默丢剧情存档 */
+        char *copy = str_dup(js);
         if (!copy) { reply_err(id, cmd, "内存不足"); return; }
-        if (!launch_thread_untracked(th_comfy_test, copy)) {
-            free(copy); reply_err(id, cmd, "无法启动线程"); return;
+        free(g.project->gal_json);
+        g.project->gal_json = copy;
+    }
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
+static void h_comfy_test(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    /* 连通测试：不占忙闲位（可与 AI 任务并行），结果走 comfy_done 事件 */
+    const char *url = p_str(root, "url", NULL);
+    char *copy;
+    if (!url || !*url) url = (g.config && g.config->comfy_url) ? g.config->comfy_url : "";
+    copy = str_dup(url);
+    if (!copy) { reply_err(id, cmd, "内存不足"); return; }
+    if (!launch_thread_untracked(th_comfy_test, copy)) {
+        free(copy); reply_err(id, cmd, "无法启动线程"); return;
+    }
+    accepted = cJSON_CreateObject();
+    cJSON_AddBoolToObject(accepted, "accepted", 1);
+    reply_ok(id, cmd, accepted);
+    return;
+}
+
+
+static void h_comfy_gen(cJSON *root, const char *cmd, int id)
+{
+    cJSON *accepted;   /* ACCEPT_ASYNC 宏/手工展开用 */
+    /* 生成配图：不占忙闲位。落盘 <exe_dir>/舞台图片/<proj_id>/<node>.png
+       （目录故意在程序目录而非 projects_dir——沿用手账 10-20 决定；
+       装进 Program Files 时可能没写权限，ensure_dir 失败会报「无法创建图片目录」） */
+    const char *node = p_str(root, "node", "");
+    const char *prompt = p_str(root, "prompt", "");
+    const char *wf_path = (g.config && g.config->comfy_workflow_path)
+                          ? g.config->comfy_workflow_path : NULL;
+    char *wf = NULL, *proj_dir = NULL, *img_dir = NULL, *out_path = NULL;
+    comfy_gen_task_t *t;
+    size_t i;
+    if (check_project(id, cmd)) return;
+    if (!node || !*node) { reply_err(id, cmd, "缺少 node（图片键）"); return; }
+    for (i = 0; node[i]; i++) {
+        char c = node[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '_' || c == '-')) {
+            reply_err(id, cmd, "node 只允许字母/数字/_/-"); return;
         }
-        accepted = cJSON_CreateObject();
-        cJSON_AddBoolToObject(accepted, "accepted", 1);
-        reply_ok(id, cmd, accepted);
+    }
+    if (!prompt || !*prompt) { reply_err(id, cmd, "缺少 prompt（场景描述）"); return; }
+    if (!g.config || !g.config->comfy_url || !*g.config->comfy_url) {
+        reply_err(id, cmd, "ComfyUI 地址未配置（见「配图工坊」）"); return;
+    }
+    if (!wf_path || !*wf_path) {
+        reply_err(id, cmd, "工作流 JSON 未配置（见「配图工坊」）"); return;
+    }
+    wf = read_file(wf_path);
+    if (!wf || !*wf) {
+        free(wf); reply_err(id, cmd, "工作流文件读取失败"); return;
+    }
+    if (!strstr(wf, "{{PROMPT}}")) {
+        free(wf);
+        reply_err(id, cmd, "工作流里没有 {{PROMPT}} 占位符（正向提示词处写上它）");
         return;
     }
-    if (strcmp(cmd, "comfy_gen") == 0) {
-        /* 生成配图：不占忙闲位。落盘 <exe_dir>/舞台图片/<proj_id>/<node>.png
-           （目录故意在程序目录而非 projects_dir——沿用手账 10-20 决定；
-           装进 Program Files 时可能没写权限，ensure_dir 失败会报「无法创建图片目录」） */
-        const char *node = p_str(root, "node", "");
-        const char *prompt = p_str(root, "prompt", "");
-        const char *wf_path = (g.config && g.config->comfy_workflow_path)
-                              ? g.config->comfy_workflow_path : NULL;
-        char *wf = NULL, *proj_dir = NULL, *img_dir = NULL, *out_path = NULL;
-        comfy_gen_task_t *t;
-        size_t i;
-        if (check_project(id, cmd)) return;
-        if (!node || !*node) { reply_err(id, cmd, "缺少 node（图片键）"); return; }
-        for (i = 0; node[i]; i++) {
-            char c = node[i];
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-                  (c >= 'A' && c <= 'Z') || c == '_' || c == '-')) {
-                reply_err(id, cmd, "node 只允许字母/数字/_/-"); return;
-            }
+    /* 图片库在程序目录的「舞台图片」下，每项目一个子文件夹防同名节点互踩 */
+    proj_dir = get_exe_dir();
+    img_dir = proj_dir ? path_join(proj_dir, "舞台图片") : NULL;
+    free(proj_dir);
+    if (!img_dir || ensure_dir(img_dir) != 0) {
+        free(wf); free(img_dir); reply_err(id, cmd, "无法创建图片目录"); return;
+    }
+    {
+        char *sub = path_join(img_dir, g.project->id);
+        free(img_dir);
+        img_dir = sub;
+    }
+    if (!img_dir || ensure_dir(img_dir) != 0) {
+        free(wf); free(img_dir); reply_err(id, cmd, "无法创建图片目录"); return;
+    }
+    {
+        char fname[320];
+        snprintf(fname, sizeof(fname), "%s.png", node);
+        out_path = path_join(img_dir, fname);
+    }
+    free(img_dir);
+    t = (comfy_gen_task_t *)calloc(1, sizeof(comfy_gen_task_t));
+    if (!t) {
+        free(wf); free(out_path); reply_err(id, cmd, "内存不足"); return;
+    }
+    t->node = str_dup(node);
+    t->url = str_dup(g.config->comfy_url);
+    t->workflow_json = wf;            /* 所有权移交 */
+    t->prompt = str_dup(prompt);
+    t->out_path = out_path;           /* 所有权移交 */
+    if (!t->node || !t->url || !t->prompt || !t->out_path) {
+        free(t->node); free(t->url); free(t->workflow_json);
+        free(t->prompt); free(t->out_path); free(t);
+        reply_err(id, cmd, "内存不足"); return;
+    }
+    if (!launch_thread_untracked(th_comfy_gen, t)) {
+        free(t->node); free(t->url); free(t->workflow_json);
+        free(t->prompt); free(t->out_path); free(t);
+        reply_err(id, cmd, "无法启动线程"); return;
+    }
+    accepted = cJSON_CreateObject();
+    cJSON_AddBoolToObject(accepted, "accepted", 1);
+    reply_ok(id, cmd, accepted);
+    return;
+}
+
+
+static void h_read_image(cJSON *root, const char *cmd, int id)
+{
+    /* 同步读图：PNG -> data URL，前端当背景用。限 16MB。 */
+    const char *node = p_str(root, "node", "");
+    char *proj_dir, *img_dir, *path, *data;
+    size_t i;
+    if (check_project(id, cmd)) return;
+    if (!node || !*node) { reply_err(id, cmd, "缺少 node（图片键）"); return; }
+    for (i = 0; node[i]; i++) {
+        char c = node[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '_' || c == '-')) {
+            reply_err(id, cmd, "node 只允许字母/数字/_/-"); return;
         }
-        if (!prompt || !*prompt) { reply_err(id, cmd, "缺少 prompt（场景描述）"); return; }
-        if (!g.config || !g.config->comfy_url || !*g.config->comfy_url) {
-            reply_err(id, cmd, "ComfyUI 地址未配置（见「配图工坊」）"); return;
-        }
-        if (!wf_path || !*wf_path) {
-            reply_err(id, cmd, "工作流 JSON 未配置（见「配图工坊」）"); return;
-        }
-        wf = read_file(wf_path);
-        if (!wf || !*wf) {
-            free(wf); reply_err(id, cmd, "工作流文件读取失败"); return;
-        }
-        if (!strstr(wf, "{{PROMPT}}")) {
-            free(wf);
-            reply_err(id, cmd, "工作流里没有 {{PROMPT}} 占位符（正向提示词处写上它）");
+    }
+    proj_dir = get_exe_dir();
+    img_dir = proj_dir ? path_join(proj_dir, "舞台图片") : NULL;
+    free(proj_dir);
+    {
+        char *sub = img_dir ? path_join(img_dir, g.project->id) : NULL;
+        free(img_dir);
+        img_dir = sub;
+    }
+    {
+        char fname[320];
+        snprintf(fname, sizeof(fname), "%s.png", node);
+        path = img_dir ? path_join(img_dir, fname) : NULL;
+    }
+    free(img_dir);
+    if (!path) { reply_err(id, cmd, "内存不足"); return; }
+    data = image_data_url(path);
+    free(path);
+    if (!data) {
+        reply_err(id, cmd, "图片尚未生成或读取失败");
+        return;
+    }
+    {
+        cJSON *d = cJSON_CreateObject();
+        add_str(d, "data", data);
+        free(data);
+        reply_ok(id, cmd, d);
+    }
+    return;
+}
+
+
+static void h_shutdown(cJSON *root, const char *cmd, int id)
+{
+    reply_ok(id, cmd, NULL);
+    PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
+    return;
+}
+
+/* ---- 命令分发表（T5 表化）：新增命令 = 加 static void h_<name>(...) + 这里登记 ---- */
+typedef void (*cmd_fn_t)(cJSON *root, const char *cmd, int id);
+static const struct { const char *name; cmd_fn_t fn; } k_cmds[] = {
+    { "hello", h_hello },
+    { "get_config", h_get_config },
+    { "list_projects", h_list_projects },
+    { "get_project", h_get_project },
+    { "ping", h_ping },
+    { "log", h_log },
+    { "set_title", h_set_title },
+    { "answer", h_answer },
+    { "cancel", h_cancel },
+    { "get_chapter", h_get_chapter },
+    { "get_plan", h_get_plan },
+    { "set_selected_chapter", h_set_selected_chapter },
+    { "token_stats", h_token_stats },
+    { "save_config", h_save_config },
+    { "fetch_models", h_fetch_models },
+    { "pick_folder", h_pick_folder },
+    { "pick_project_file", h_pick_project_file },
+    { "pick_text_file", h_pick_text_file },
+    { "open_path", h_open_path },
+    { "reveal_path", h_reveal_path },
+    { "new_project", h_new_project },
+    { "load_project", h_load_project },
+    { "save_project", h_save_project },
+    { "set_project_name", h_set_project_name },
+    { "set_project_idea", h_set_project_idea },
+    { "set_chapter", h_set_chapter },
+    { "set_plan", h_set_plan },
+    { "set_world", h_set_world },
+    { "set_characters", h_set_characters },
+    { "select_direction", h_select_direction },
+    { "select_plan", h_select_plan },
+    { "export", h_export },
+    { "gen_directions", h_gen_directions },
+    { "gen_plans", h_gen_plans },
+    { "expand_outline", h_expand_outline },
+    { "expand_chapter", h_expand_chapter },
+    { "expand_all", h_expand_all },
+    { "step_write", h_step_write },
+    { "check_consistency", h_check_consistency },
+    { "summarize_worldview", h_summarize_worldview },
+    { "generate_characters", h_generate_characters },
+    { "check_finale", h_check_finale },
+    { "analyze_text", h_analyze_text },
+    { "auto_write", h_auto_write },
+    { "import_txt", h_import_txt },
+    { "ai_call", h_ai_call },
+    { "get_gal", h_get_gal },
+    { "set_gal", h_set_gal },
+    { "comfy_test", h_comfy_test },
+    { "comfy_gen", h_comfy_gen },
+    { "read_image", h_read_image },
+    { "shutdown", h_shutdown },
+};
+
+void cmd_dispatch(cJSON *root)
+{
+    const char *cmd = j_str(root, "cmd", NULL);
+    int id = j_int(root, "id", 0);
+    size_t i;
+
+    if (!cmd) return;
+
+    for (i = 0; i < sizeof(k_cmds) / sizeof(k_cmds[0]); i++) {
+        if (strcmp(cmd, k_cmds[i].name) == 0) {
+            k_cmds[i].fn(root, cmd, id);
             return;
         }
-        /* 图片库在程序目录的「舞台图片」下，每项目一个子文件夹防同名节点互踩 */
-        proj_dir = get_exe_dir();
-        img_dir = proj_dir ? path_join(proj_dir, "舞台图片") : NULL;
-        free(proj_dir);
-        if (!img_dir || ensure_dir(img_dir) != 0) {
-            free(wf); free(img_dir); reply_err(id, cmd, "无法创建图片目录"); return;
-        }
-        {
-            char *sub = path_join(img_dir, g.project->id);
-            free(img_dir);
-            img_dir = sub;
-        }
-        if (!img_dir || ensure_dir(img_dir) != 0) {
-            free(wf); free(img_dir); reply_err(id, cmd, "无法创建图片目录"); return;
-        }
-        {
-            char fname[320];
-            snprintf(fname, sizeof(fname), "%s.png", node);
-            out_path = path_join(img_dir, fname);
-        }
-        free(img_dir);
-        t = (comfy_gen_task_t *)calloc(1, sizeof(comfy_gen_task_t));
-        if (!t) {
-            free(wf); free(out_path); reply_err(id, cmd, "内存不足"); return;
-        }
-        t->node = str_dup(node);
-        t->url = str_dup(g.config->comfy_url);
-        t->workflow_json = wf;            /* 所有权移交 */
-        t->prompt = str_dup(prompt);
-        t->out_path = out_path;           /* 所有权移交 */
-        if (!t->node || !t->url || !t->prompt || !t->out_path) {
-            free(t->node); free(t->url); free(t->workflow_json);
-            free(t->prompt); free(t->out_path); free(t);
-            reply_err(id, cmd, "内存不足"); return;
-        }
-        if (!launch_thread_untracked(th_comfy_gen, t)) {
-            free(t->node); free(t->url); free(t->workflow_json);
-            free(t->prompt); free(t->out_path); free(t);
-            reply_err(id, cmd, "无法启动线程"); return;
-        }
-        accepted = cJSON_CreateObject();
-        cJSON_AddBoolToObject(accepted, "accepted", 1);
-        reply_ok(id, cmd, accepted);
-        return;
-    }
-    if (strcmp(cmd, "read_image") == 0) {
-        /* 同步读图：PNG -> data URL，前端当背景用。限 16MB。 */
-        const char *node = p_str(root, "node", "");
-        char *proj_dir, *img_dir, *path, *data;
-        size_t i;
-        if (check_project(id, cmd)) return;
-        if (!node || !*node) { reply_err(id, cmd, "缺少 node（图片键）"); return; }
-        for (i = 0; node[i]; i++) {
-            char c = node[i];
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-                  (c >= 'A' && c <= 'Z') || c == '_' || c == '-')) {
-                reply_err(id, cmd, "node 只允许字母/数字/_/-"); return;
-            }
-        }
-        proj_dir = get_exe_dir();
-        img_dir = proj_dir ? path_join(proj_dir, "舞台图片") : NULL;
-        free(proj_dir);
-        {
-            char *sub = img_dir ? path_join(img_dir, g.project->id) : NULL;
-            free(img_dir);
-            img_dir = sub;
-        }
-        {
-            char fname[320];
-            snprintf(fname, sizeof(fname), "%s.png", node);
-            path = img_dir ? path_join(img_dir, fname) : NULL;
-        }
-        free(img_dir);
-        if (!path) { reply_err(id, cmd, "内存不足"); return; }
-        data = image_data_url(path);
-        free(path);
-        if (!data) {
-            reply_err(id, cmd, "图片尚未生成或读取失败");
-            return;
-        }
-        {
-            cJSON *d = cJSON_CreateObject();
-            add_str(d, "data", data);
-            free(data);
-            reply_ok(id, cmd, d);
-        }
-        return;
-    }
-    if (strcmp(cmd, "shutdown") == 0) {
-        reply_ok(id, cmd, NULL);
-        PostMessageW(g.hwnd, WM_CLOSE, 0, 0);
-        return;
     }
 
     reply_err(id, cmd, "未知命令");
