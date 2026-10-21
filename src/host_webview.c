@@ -189,7 +189,7 @@ unsigned char *b64_decode(const char *in, int *outLen)
     return out;
 }
 
-HRESULT STDMETHODCALLTYPE CdpCB_Invoke(
+static HRESULT cdp_invoke_body(
     ICoreWebView2CallDevToolsProtocolMethodCompletedHandler *This,
     HRESULT errorCode, LPCWSTR jsonResult)
 {
@@ -242,6 +242,19 @@ HRESULT STDMETHODCALLTYPE CdpCB_Invoke(
     return S_OK;
 }
 
+/* 一发式 completion handler 的自我释放约定：Invoke 恰好被调用一次，调完把
+   我们自己那份引用还掉（API 若另持一份，它自己会还）。
+   忘还=泄漏（无害）；还两次=UAF（致命）——只在 wrapper 里还这一次，
+   函数体的所有 return 都不碰引用计数。 */
+HRESULT STDMETHODCALLTYPE CdpCB_Invoke(
+    ICoreWebView2CallDevToolsProtocolMethodCompletedHandler *This,
+    HRESULT errorCode, LPCWSTR jsonResult)
+{
+    HRESULT r = cdp_invoke_body(This, errorCode, jsonResult);
+    This->lpVtbl->Release(This);
+    return r;
+}
+
 ICoreWebView2CallDevToolsProtocolMethodCompletedHandlerVtbl g_CdpCBVtbl = {
     CdpCB_QI, CdpCB_AddRef, CdpCB_Release, CdpCB_Invoke
 };
@@ -270,10 +283,13 @@ void request_screenshot_cdp(void)
     cb = (CdpCB *)calloc(1, sizeof(CdpCB));
     if (!cb) return;
     cb->iface.lpVtbl = &g_CdpCBVtbl;
-    cb->ref = 1000000;   /* 诊断：排除 handler 被提前释放导致回调不来 */
+    cb->ref = 1;   /* 正规 COM 计数（P1：曾 ref=1000000 诊断泄漏——「回调不来」
+                      早已破案是可见性问题，与 handler 生命周期无关） */
     hr = g_wv->lpVtbl->CallDevToolsProtocolMethod(
         g_wv, L"Page.captureScreenshot", L"{\"format\":\"png\"}",
         (ICoreWebView2CallDevToolsProtocolMethodCompletedHandler *)cb);
+    if (FAILED(hr))
+        cb->iface.lpVtbl->Release(&cb->iface);   /* 调用失败 API 不接手也不会回调，我们这份自己还掉 */
     log_line("CallDevToolsProtocolMethod hr=0x%08lX", (unsigned long)hr);
 }
 
@@ -290,6 +306,8 @@ HRESULT STDMETHODCALLTYPE EsCB_Invoke(
     (void)This;
     log_line("ExecuteScript 回调 hr=0x%08lX 结果=%ls",
              (unsigned long)errorCode, resultJson ? resultJson : L"(null)");
+    /* 自我释放约定同 CdpCB_Invoke */
+    This->lpVtbl->Release(This);
     return S_OK;
 }
 
@@ -305,13 +323,15 @@ void test_execute_script(void)
     cb = (EsCB *)calloc(1, sizeof(EsCB));
     if (!cb) return;
     cb->iface.lpVtbl = &g_EsCBVtbl;
-    cb->ref = 1000000;
+    cb->ref = 1;
     hr = g_wv->lpVtbl->ExecuteScript(
         g_wv, L"1+1", (ICoreWebView2ExecuteScriptCompletedHandler *)cb);
+    if (FAILED(hr))
+        cb->iface.lpVtbl->Release(&cb->iface);   /* 同 CdpCB：失败路径自己还 */
     log_line("ExecuteScript hr=0x%08lX", (unsigned long)hr);
 }
 
-HRESULT STDMETHODCALLTYPE CapCB_Invoke(
+static HRESULT cap_invoke_body(
     ICoreWebView2CapturePreviewCompletedHandler *This, HRESULT errorCode)
 {
     STATSTG st;
@@ -346,6 +366,15 @@ HRESULT STDMETHODCALLTYPE CapCB_Invoke(
         log_line("!! 读取截图流失败");
     free(buf);
     return S_OK;
+}
+
+/* 自我释放约定同 CdpCB_Invoke：一发式 handler，Invoke 后放掉我们的引用 */
+HRESULT STDMETHODCALLTYPE CapCB_Invoke(
+    ICoreWebView2CapturePreviewCompletedHandler *This, HRESULT errorCode)
+{
+    HRESULT r = cap_invoke_body(This, errorCode);
+    This->lpVtbl->Release(This);
+    return r;
 }
 
 ICoreWebView2CapturePreviewCompletedHandlerVtbl g_CapCBVtbl = {
@@ -391,10 +420,12 @@ void request_screenshot(void)
     cb = (CapCB *)calloc(1, sizeof(CapCB));
     if (!cb) return;
     cb->iface.lpVtbl = &g_CapCBVtbl;
-    cb->ref = 1000000;   /* 同上，排除生命周期因素 */
+    cb->ref = 1;   /* 同 CdpCB，正规计数 */
     hr = g_wv->lpVtbl->CapturePreview(
         g_wv, COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, g_shotStream,
         (ICoreWebView2CapturePreviewCompletedHandler *)cb);
+    if (FAILED(hr))
+        cb->iface.lpVtbl->Release(&cb->iface);   /* 失败路径自己还 */
     log_line("CapturePreview hr=0x%08lX", (unsigned long)hr);
     if (FAILED(hr)) request_screenshot_cdp();
 
@@ -551,13 +582,20 @@ void navigate_file_url(void)
 }
 
 /* ---- 控制器创建完成：装配页面 ---- */
+/* 事件注册令牌与 handler 持有：必须存下来，WM_DESTROY 里先 remove_ 再放
+   我们自己那份引用，MsgCB/NavCB 归零即释放。
+   （P1：曾一个局部 token 先后接 WebMessageReceived/NavigationCompleted 两次
+   add，后者覆盖前者，token 全丢——事件永远拆不掉，handler 挂到进程死） */
+static EventRegistrationToken g_tokenMsg, g_tokenNav;
+static MsgCB *g_msgcb;
+static NavCB *g_navcb;
+
 HRESULT STDMETHODCALLTYPE CtrlCB_Invoke(
     ICoreWebView2CreateCoreWebView2ControllerCompletedHandler *This,
     HRESULT errorCode, ICoreWebView2Controller *controller)
 {
     RECT rc;
     ICoreWebView2Settings *settings = NULL;
-    EventRegistrationToken token;
     MsgCB *msgcb;
     NavCB *navcb;
     (void)This;
@@ -615,9 +653,11 @@ HRESULT STDMETHODCALLTYPE CtrlCB_Invoke(
     msgcb = (MsgCB *)calloc(1, sizeof(MsgCB));
     if (msgcb) {
         msgcb->iface.lpVtbl = &g_MsgCBVtbl;
-        msgcb->ref = 1;
+        msgcb->ref = 1;   /* 我们持一份，事件源接手后另持一份（COM 约定）；
+                             WM_DESTROY 里 remove_ 后才放我们的，谁最后放手谁 free */
+        g_msgcb = msgcb;
         if (FAILED(g_wv->lpVtbl->add_WebMessageReceived(
-                g_wv, (ICoreWebView2WebMessageReceivedEventHandler *)msgcb, &token)))
+                g_wv, (ICoreWebView2WebMessageReceivedEventHandler *)msgcb, &g_tokenMsg)))
             log_line("!! 注册 WebMessageReceived 失败");
         else
             log_line("OK  JS -> C 通道就绪");
@@ -628,9 +668,10 @@ HRESULT STDMETHODCALLTYPE CtrlCB_Invoke(
     if (navcb) {
         HRESULT hr;
         navcb->iface.lpVtbl = &g_NavCBVtbl;
-        navcb->ref = 1;
+        navcb->ref = 1;   /* 同 msgcb：事件源持一份，WM_DESTROY 拆除后我们再放 */
+        g_navcb = navcb;
         hr = g_wv->lpVtbl->add_NavigationCompleted(
-            g_wv, (ICoreWebView2NavigationCompletedEventHandler *)navcb, &token);
+            g_wv, (ICoreWebView2NavigationCompletedEventHandler *)navcb, &g_tokenNav);
         log_line("add_NavigationCompleted hr=0x%08lX", (unsigned long)hr);
     }
 
@@ -1026,7 +1067,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 if (g.config) { config_destroy(g.config); g.config = NULL; }
             }
         }
-        if (g_wv) { g_wv->lpVtbl->Release(g_wv); g_wv = NULL; }   /* get_CoreWebView2 是 AddRef 过的，不 Release 就漏一份（P1 COM 泄漏） */
+        if (g_wv) {
+            /* 拆事件注册：remove_ 会还回事件源那份引用，之后再放我们自己那份，
+               MsgCB/NavCB 归零即释放（P1 COM 收尾：曾永不 remove、token 用完就丢） */
+            g_wv->lpVtbl->remove_WebMessageReceived(g_wv, g_tokenMsg);
+            g_wv->lpVtbl->remove_NavigationCompleted(g_wv, g_tokenNav);
+            g_wv->lpVtbl->Release(g_wv);   /* get_CoreWebView2 是 AddRef 过的，不 Release 就漏一份（P1 COM 泄漏） */
+            g_wv = NULL;
+        }
+        if (g_msgcb) { g_msgcb->iface.lpVtbl->Release(&g_msgcb->iface); g_msgcb = NULL; }
+        if (g_navcb) { g_navcb->iface.lpVtbl->Release(&g_navcb->iface); g_navcb = NULL; }
         if (g_ctrl) {
             g_ctrl->lpVtbl->Close(g_ctrl);
             g_ctrl->lpVtbl->Release(g_ctrl);
