@@ -219,6 +219,7 @@ function renderSidebar() {
   $('outDir').textContent = outDir() || '—';
   setLink('linkDoc', S.cfg.lastDoc, 'RTF');
   setLink('linkTxt', S.cfg.lastTxt, 'TXT');
+  setLink('linkEpub', S.cfg.lastEpub, 'EPUB');
   $('cfgPath').textContent = S.cfg.configPath ? 'config.json' : '';
 }
 

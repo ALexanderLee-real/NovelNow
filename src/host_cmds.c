@@ -1,6 +1,7 @@
 /* host_cmds.c - file dialogs + export/import + JSON command dispatch (split from host.c 2026-10-18, zero behavior change) */
 #include "host_internal.h"
 #include "comfy_api.h"
+#include "epub_export.h"
 
 
 /* ============================================================
@@ -213,7 +214,7 @@ int export_novel_doc(novel_project_t *proj, const char *path)
 int do_export(const char *dir_override)
 {
     const char *dir;
-    char doc_path[2048], txt_path[2048];
+    char doc_path[2048], txt_path[2048], epub_path[2048];
     char safe[256];
     const unsigned char *p;
     int k = 0;
@@ -241,16 +242,22 @@ int do_export(const char *dir_override)
 
     snprintf(doc_path, sizeof(doc_path), "%s\\%s.doc", dir, safe);
     snprintf(txt_path, sizeof(txt_path), "%s\\%s.txt", dir, safe);
+    snprintf(epub_path, sizeof(epub_path), "%s\\%s.epub", dir, safe);
 
     g.last_doc[0] = '\0';
     g.last_txt[0] = '\0';
+    g.last_epub[0] = '\0';
     if (export_novel_doc(g.project, doc_path) == 0) {
         snprintf(g.last_doc, sizeof(g.last_doc), "%s", doc_path);
     }
     if (export_novel_txt(g.project, txt_path) == 0) {
         snprintf(g.last_txt, sizeof(g.last_txt), "%s", txt_path);
     }
-    return (g.last_doc[0] || g.last_txt[0]) ? 0 : -1;
+    /* 支线 B：EPUB 是独立产物，它失败不该拖死 doc/txt 的导出结果 */
+    if (export_novel_epub(g.project, epub_path) == 0) {
+        snprintf(g.last_epub, sizeof(g.last_epub), "%s", epub_path);
+    }
+    return (g.last_doc[0] || g.last_txt[0] || g.last_epub[0]) ? 0 : -1;
 }
 
 void open_path(const char *path)
@@ -434,6 +441,7 @@ void cmd_hello(int id)
     add_str(d, "exportDir", g.export_dir);
     add_str(d, "lastDoc", g.last_doc);
     add_str(d, "lastTxt", g.last_txt);
+    add_str(d, "lastEpub", g.last_epub);
     log_line("配置下发：服务商预设 %d 组，当前模型 %s",
              config_presets_count(),
              (g.config && g.config->ai && g.config->ai->model) ? g.config->ai->model : "?");
@@ -697,7 +705,7 @@ void cmd_dispatch(cJSON *root)
         if (!g.project) { reply_err(id, cmd, "内存不足，无法创建项目"); return; }
         g.selected_chapter = -1;
         g.dirty = 1;
-        g.last_doc[0] = g.last_txt[0] = '\0';
+        g.last_doc[0] = g.last_txt[0] = g.last_epub[0] = '\0';
         reply_ok(id, cmd, project_meta_json(g.project));
         push_project();
         push_status("新项目已创建");
@@ -907,9 +915,10 @@ void cmd_dispatch(cJSON *root)
             cJSON *d = cJSON_CreateObject();
             add_str(d, "doc", g.last_doc);
             add_str(d, "txt", g.last_txt);
+            add_str(d, "epub", g.last_epub);   /* 支线 B */
             reply_ok(id, cmd, d);
-            push_toast("success", "已导出 DOC / TXT");
-            push_status("已导出 DOC/TXT");
+            push_toast("success", "已导出 DOC / TXT / EPUB");
+            push_status("已导出 DOC/TXT/EPUB");
         } else {
             reply_err(id, cmd, "导出失败，请检查输出目录是否可写");
         }

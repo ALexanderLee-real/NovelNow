@@ -742,7 +742,7 @@ void handle_task_done(task_done_t *t)
             g.project = proj;
             g.selected_chapter = -1;
             g.dirty = 0;
-            g.last_doc[0] = g.last_txt[0] = '\0';
+            g.last_doc[0] = g.last_txt[0] = g.last_epub[0] = '\0';
         }
         end_task();
         {
@@ -1191,7 +1191,7 @@ void load_app_state(void)
     else log_line("!! 引擎创建失败");
 
     g.selected_chapter = -1;
-    g.last_doc[0] = g.last_txt[0] = '\0';
+    g.last_doc[0] = g.last_txt[0] = g.last_epub[0] = '\0';
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nCmdShow)

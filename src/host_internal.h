@@ -44,6 +44,7 @@ typedef struct {
     char                 export_dir[1024];
     char                 last_doc[2048];
     char                 last_txt[2048];
+    char                 last_epub[2048];   /* 支线 B：EPUB 产物（与 doc/txt 并列第三路） */
 } app_t;
 
 /* from host.c:86-102 */

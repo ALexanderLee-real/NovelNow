@@ -153,6 +153,7 @@ $('btnExport').onclick = () => {
   send('export', { dir: dir }).then(d => {
     S.cfg.lastDoc = d.doc || '';
     S.cfg.lastTxt = d.txt || '';
+    S.cfg.lastEpub = d.epub || '';
     renderSidebar();
   }).catch(e => toast('error', e.message));
 };
@@ -358,6 +359,11 @@ $('linkDoc').onclick = e => {
   if (p) fire('open_path', { path: p });
 };
 $('linkTxt').onclick = e => {
+  e.preventDefault();
+  const p = e.target.dataset.path;
+  if (p) fire('open_path', { path: p });
+};
+$('linkEpub').onclick = e => {
   e.preventDefault();
   const p = e.target.dataset.path;
   if (p) fire('open_path', { path: p });

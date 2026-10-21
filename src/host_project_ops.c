@@ -171,6 +171,7 @@ cJSON *config_json(void)
     add_str(o, "exportDir", g.export_dir);
     add_str(o, "lastDoc", g.last_doc);
     add_str(o, "lastTxt", g.last_txt);
+    add_str(o, "lastEpub", g.last_epub);   /* 支线 B */
     free(cfg_path);
     return o;
 }
