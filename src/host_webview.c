@@ -814,6 +814,23 @@ void handle_task_done(task_done_t *t)
         g.dirty = 1;
         push_project();
     }
+
+    /* 支线 C：任务收尾把未领取的 Token 用量落进 config 持久化。
+       桶是 ai 层原子攒的，ai_usage_take() 领走即清零，丢不了也重不了 */
+    {
+        long long p = 0, c = 0, tn = 0;
+        ai_usage_take(&p, &c, &tn);
+        if ((p || c || tn) && g.config) {
+            g.config->tokens_prompt += p;
+            g.config->tokens_completion += c;
+            g.config->tokens_total += tn;
+            char *cfg_path = config_get_default_path();
+            if (cfg_path) {
+                config_save(g.config, cfg_path);
+                free(cfg_path);
+            }
+        }
+    }
 }
 
 /* ============================================================

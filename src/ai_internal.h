@@ -39,6 +39,11 @@ typedef struct {
     ai_stream_cb cb;
     void *ud;
     int done;
+    /* 支线 C：usage 记账。DeepSeek 等在 [DONE] 前最后一条 data 里带 usage，
+       解析到就记下，由 ai_chat_stream 收尾时带进 resp（拿不到就全 0）。 */
+    int prompt_tokens;
+    int completion_tokens;
+    int total_tokens;
 } sse_ctx_t;
 
 /* ---- ai_http.c ---- */

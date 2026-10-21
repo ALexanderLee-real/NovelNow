@@ -18,6 +18,11 @@ typedef struct {
     char *comfy_url;           /* ComfyUI 基地址（默认 http://127.0.0.1:8188），空=未配置 */
     char *comfy_workflow_path; /* API 格式工作流 JSON 文件路径（含 {{PROMPT}} 占位符） */
     int comfy_auto_bg;         /* 剧情分支自动生成下一节背景图开关 */
+    /* 支线 C：累计 Token 用量（跨进程的终身计数）。
+       host 在任务收尾 ai_usage_take() 领走增量后累加到这三项并 config_save。 */
+    long long tokens_prompt;
+    long long tokens_completion;
+    long long tokens_total;
 } app_config_t;
 
 /* 加载/保存配置 */

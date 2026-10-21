@@ -89,6 +89,15 @@ void ai_abort_current(void);
 void ai_abort_all(void);
 void ai_abort_reset(void);
 
+/* ---- Token 用量统计（支线 C）----
+ * ai_chat* 解析到 usage（OpenAI 兼容响应体的 usage 字段；流式下 DeepSeek 等
+ * 在 [DONE] 前最后一条带，OpenAI 需要 stream_options.include_usage 才给——
+ * 本项目不加该字段，兼容优先；拿不到就统计为 0，不猜不估）即自动记账。
+ * ai_usage_take：原子领走「未领取」累计（读取即清零），调用方负责落盘持久化。
+ * ai_usage_session：本次进程启动以来的累计（只读展示用）。 */
+void ai_usage_take(long long *prompt, long long *completion, long long *total);
+void ai_usage_session(long long *prompt, long long *completion, long long *total);
+
 /* 获取可用模型列表（OpenAI 兼容 /v1/models 端点）
    cfg: 需已设置 api_url 与 api_key
    count: 输出模型数量

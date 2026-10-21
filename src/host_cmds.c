@@ -590,6 +590,22 @@ void cmd_dispatch(cJSON *root)
         return;
     }
 
+    /* 支线 C：Token 用量统计。只读 config 计数 + ai 层会话累计，不碰 project，
+       任务进行中也允许（AI 任务跑着的时候才最想看用量） */
+    if (strcmp(cmd, "token_stats") == 0) {
+        long long sp = 0, sc = 0, st = 0;
+        cJSON *d = cJSON_CreateObject();
+        ai_usage_session(&sp, &sc, &st);
+        cJSON_AddNumberToObject(d, "sessionPrompt", (double)sp);
+        cJSON_AddNumberToObject(d, "sessionCompletion", (double)sc);
+        cJSON_AddNumberToObject(d, "sessionTotal", (double)st);
+        cJSON_AddNumberToObject(d, "prompt",     (double)(g.config ? g.config->tokens_prompt : 0));
+        cJSON_AddNumberToObject(d, "completion", (double)(g.config ? g.config->tokens_completion : 0));
+        cJSON_AddNumberToObject(d, "total",      (double)(g.config ? g.config->tokens_total : 0));
+        reply_ok(id, cmd, d);
+        return;
+    }
+
     /* ---- 以下命令需要独占 project，任务运行中一律拒绝 ---- */
 
     if (strcmp(cmd, "save_config") == 0) {

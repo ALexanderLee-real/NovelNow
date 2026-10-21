@@ -57,6 +57,40 @@ static int retryable_error(const char *err)
     return 0;
 }
 
+/* ============== Token 用量记账（支线 C） ==============
+ * 每次 AI 响应解析到 usage（OpenAI 兼容响应体的 usage 字段）就累计：
+ *   未领取桶（s_usage_*）——host 在任务收尾用 ai_usage_take() 原子领走，
+ *                       落进 config.json 的 tokens_* 持久化；
+ *   会话累计（s_sess_*）——本次进程启动以来，只读展示用。
+ * 拿不到 usage 的服务商（不回 usage 字段）就统计为 0，不猜不估。 */
+static volatile LONG64 s_usage_p, s_usage_c, s_usage_t;
+static volatile LONG64 s_sess_p, s_sess_c, s_sess_t;
+
+static void usage_account(int p, int c, int t)
+{
+    if (p <= 0 && c <= 0 && t <= 0) return;
+    InterlockedAdd64(&s_usage_p, p);
+    InterlockedAdd64(&s_usage_c, c);
+    InterlockedAdd64(&s_usage_t, t);
+    InterlockedAdd64(&s_sess_p, p);
+    InterlockedAdd64(&s_sess_c, c);
+    InterlockedAdd64(&s_sess_t, t);
+}
+
+void ai_usage_take(long long *prompt, long long *completion, long long *total)
+{
+    if (prompt)   *prompt   = (long long)InterlockedExchange64(&s_usage_p, 0);
+    if (completion) *completion = (long long)InterlockedExchange64(&s_usage_c, 0);
+    if (total)    *total    = (long long)InterlockedExchange64(&s_usage_t, 0);
+}
+
+void ai_usage_session(long long *prompt, long long *completion, long long *total)
+{
+    if (prompt)   *prompt   = (long long)s_sess_p;
+    if (completion) *completion = (long long)s_sess_c;
+    if (total)    *total    = (long long)s_sess_t;
+}
+
 /* ============== 请求中止（点取消立即掐断在途请求） ============== */
 
 INIT_ONCE g_abort_once = INIT_ONCE_STATIC_INIT;
@@ -400,6 +434,8 @@ ai_response_t* ai_chat(ai_config_t *cfg, chat_message_t *messages, int msg_count
                     if (pt && cJSON_IsNumber(pt)) resp->prompt_tokens = pt->valueint;
                     if (ct && cJSON_IsNumber(ct)) resp->completion_tokens = ct->valueint;
                     if (tt && cJSON_IsNumber(tt)) resp->total_tokens = tt->valueint;
+                    /* 支线 C：记账（失败但已计费的响应也照记） */
+                    usage_account(resp->prompt_tokens, resp->completion_tokens, resp->total_tokens);
                 }
             }
             cJSON_Delete(resp_json);
@@ -577,6 +613,12 @@ ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int ms
     free(http_err);
     free(json_str);
     free(endpoint);
+    /* 支线 C：流式收尾把 usage 带进 resp 并记账（sse_reset 会清掉，先拷走） */
+    resp->prompt_tokens = sse.prompt_tokens;
+    resp->completion_tokens = sse.completion_tokens;
+    resp->total_tokens = sse.total_tokens;
+    usage_account(resp->prompt_tokens, resp->completion_tokens, resp->total_tokens);
+
     sse_reset(&sse);
     return resp;
 }

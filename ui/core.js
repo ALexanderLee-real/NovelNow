@@ -225,6 +225,9 @@ function handleTaskDone(d) {
     send('get_project').then(p => { S.proj = p; renderAll(true); }).catch(() => {});
     send('get_config').then(c => { S.cfg = c; renderSidebar(); }).catch(() => {});
   }
+
+  /* 支线 C：任务收尾刷新 Token 用量（C 侧 handle_task_done 刚把增量落进 config） */
+  if (typeof refreshTokens === 'function') refreshTokens();
 }
 
 /* 逐章生成的「是否满意」询问。

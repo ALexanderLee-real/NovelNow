@@ -369,6 +369,23 @@ $('linkEpub').onclick = e => {
   if (p) fire('open_path', { path: p });
 };
 
+/* ---- 支线 C：Token 用量展示 ---- */
+function fmtTok(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(1) + 'k';
+  return String(n);
+}
+function refreshTokens() {
+  const el = $('tokenUse');
+  if (!el) return;
+  send('token_stats').then(d => {
+    if (!d) return;
+    el.textContent = '本次 ' + fmtTok(d.sessionTotal) + ' · 累计 ' + fmtTok(d.total);
+  }).catch(() => {});
+}
+refreshTokens();   /* 启动先来一发；之后每次 task_done 由 core.js 刷新 */
+
 /* ---- 更多功能菜单 ---- */
 function openMenu() {
   const btn = $('btnMore');

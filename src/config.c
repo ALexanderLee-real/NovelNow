@@ -256,6 +256,18 @@ app_config_t* config_load(const char *path)
         cfg->auto_save_interval = 30;
     }
 
+    /* 支线 C：累计 Token 用量。用 valuedouble 读——cJSON 的 valueint 只有
+       32 位，终身累计会溢出；负数（手改坏的配置）归 0 */
+    if ((item = cJSON_GetObjectItem(root, "tokens_prompt")) && cJSON_IsNumber(item))
+        cfg->tokens_prompt = (long long)item->valuedouble;
+    if ((item = cJSON_GetObjectItem(root, "tokens_completion")) && cJSON_IsNumber(item))
+        cfg->tokens_completion = (long long)item->valuedouble;
+    if ((item = cJSON_GetObjectItem(root, "tokens_total")) && cJSON_IsNumber(item))
+        cfg->tokens_total = (long long)item->valuedouble;
+    if (cfg->tokens_prompt < 0) cfg->tokens_prompt = 0;
+    if (cfg->tokens_completion < 0) cfg->tokens_completion = 0;
+    if (cfg->tokens_total < 0) cfg->tokens_total = 0;
+
     if ((item = cJSON_GetObjectItem(root, "enable_consistency_check")) && cJSON_IsNumber(item)) {
         cfg->enable_consistency_check = item->valueint ? 1 : 0;
     } else {
@@ -324,6 +336,10 @@ int config_save(app_config_t *cfg, const char *path)
     cJSON_AddStringToObject(root, "language", cfg->language ? cfg->language : "zh-CN");
     cJSON_AddNumberToObject(root, "auto_save_interval", cfg->auto_save_interval);
     cJSON_AddNumberToObject(root, "enable_consistency_check", cfg->enable_consistency_check ? 1 : 0);
+    /* 支线 C：终身 Token 计数（double 精确到 2^53，够记一辈子） */
+    cJSON_AddNumberToObject(root, "tokens_prompt", (double)cfg->tokens_prompt);
+    cJSON_AddNumberToObject(root, "tokens_completion", (double)cfg->tokens_completion);
+    cJSON_AddNumberToObject(root, "tokens_total", (double)cfg->tokens_total);
     cJSON_AddStringToObject(root, "comfy_url", cfg->comfy_url ? cfg->comfy_url : "");
     if (cfg->comfy_workflow_path && *cfg->comfy_workflow_path)
         cJSON_AddStringToObject(root, "comfy_workflow_path", cfg->comfy_workflow_path);
