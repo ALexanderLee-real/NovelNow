@@ -21,7 +21,7 @@ static BOOL CALLBACK throttle_init_fn(PINIT_ONCE once, PVOID param, PVOID *ctx)
 /* 请求发出前的节流闸：把相邻两次 AI 请求（含流式）的间隔拉到
    cfg->rate_limit_ms 以上。所有工作线程共用一把闸，全自动写作
    连发请求时也会被依次排开。 */
-static void abortable_sleep(DWORD ms);   /* 前向声明：ai_throttle_wait 在定义前用到 */
+/* abortable_sleep 的声明见 ai_internal.h（comfy 轮询也要用） */
 
 static void ai_throttle_wait(const ai_config_t *cfg)
 {
@@ -38,7 +38,7 @@ static void ai_throttle_wait(const ai_config_t *cfg)
         g_last_request_tick = now + wait;
     }
     LeaveCriticalSection(&g_throttle_cs);
-    if (wait) abortable_sleep((DWORD)wait);
+    if (wait) abortable_sleep(g_abort_ai, (DWORD)wait);
 }
 
 /* 判断错误是否值得重试：限流(429)、服务端 5xx、连接类失败。
@@ -60,10 +60,31 @@ static int retryable_error(const char *err)
 /* ============== 请求中止（点取消立即掐断在途请求） ============== */
 
 INIT_ONCE g_abort_once = INIT_ONCE_STATIC_INIT;
-CRITICAL_SECTION g_abort_cs;
-volatile LONG g_abort_flag = 0;
-HINTERNET g_active_req = NULL;   /* 当前在途请求的 WinInet 句柄 */
-HINTERNET g_aborted_req = NULL;  /* 被 abort 线程代关的句柄：请求线程不得再关（防双重关闭/句柄复用误杀） */
+CRITICAL_SECTION g_abort_cs;   /* 一把锁护两个通道的在途链表，够用 */
+
+/* 前置声明：两个结构互相引用 */
+struct ai_req_node;
+
+/* 取消通道上下文：flag=中止标记，reqs=该通道在途请求链表 */
+struct abort_ctx {
+    volatile LONG flag;
+    struct ai_req_node *reqs;
+};
+
+/* 在途请求节点：句柄 + 「取消线程已代关」标记。
+   标记必须挂在节点上而不是记全局句柄值——句柄值会被新请求复用，
+   靠值比对会误杀他人连接（单槽 g_active_req/g_aborted_req 时代的教训）。 */
+struct ai_req_node {
+    HINTERNET h;
+    volatile LONG aborted;
+    struct abort_ctx *ctx;
+    struct ai_req_node *next;
+};
+
+static struct abort_ctx g_ctx_ai = { 0, NULL };
+static struct abort_ctx g_ctx_comfy = { 0, NULL };
+abort_ctx_t *g_abort_ai = &g_ctx_ai;
+abort_ctx_t *g_abort_comfy = &g_ctx_comfy;
 
 static BOOL CALLBACK abort_init_fn(PINIT_ONCE once, PVOID param, PVOID *ctx)
 {
@@ -77,36 +98,85 @@ void abort_lock(void)
     InitOnceExecuteOnce(&g_abort_once, abort_init_fn, NULL, NULL);
 }
 
-void ai_abort_current(void)
+void abort_ctx_abort(abort_ctx_t *ctx)
 {
     abort_lock();
-    InterlockedExchange(&g_abort_flag, 1);
+    InterlockedExchange(&ctx->flag, 1);
     /* 从别的线程关闭句柄会让阻塞中的 InternetReadFile 立刻失败返回，
        这是 WinInet 官方认可的中断方式 */
     EnterCriticalSection(&g_abort_cs);
-    if (g_active_req) {
-        g_aborted_req = g_active_req;
-        InternetCloseHandle(g_active_req);
-        g_active_req = NULL;   /* 请求线程退出时认出 g_aborted_req==自己的句柄就不再关
-                                 （见 ai_http.c 防重关逻辑）：句柄值可能已被新请求复用，
-                                 二次关闭会误杀他人的连接 */
+    for (struct ai_req_node *n = ctx->reqs; n; n = n->next) {
+        n->aborted = 1;
+        InternetCloseHandle(n->h);
     }
     LeaveCriticalSection(&g_abort_cs);
 }
 
+/* 对外惯用接口：掐 AI 通道（engine/host 的取消按钮走这里） */
+void ai_abort_current(void)
+{
+    abort_ctx_abort(g_abort_ai);
+}
+
+/* 关窗等场景：两条通道都掐，AI 与 comfy 的阻塞读/轮询全部立刻醒 */
+void ai_abort_all(void)
+{
+    abort_ctx_abort(g_abort_ai);
+    abort_ctx_abort(g_abort_comfy);
+}
+
+int abort_ctx_aborted(abort_ctx_t *ctx)
+{
+    return InterlockedCompareExchange(&ctx->flag, 0, 0) != 0;
+}
+
 int ai_aborted(void)
 {
-    return InterlockedCompareExchange(&g_abort_flag, 0, 0) != 0;
+    return abort_ctx_aborted(g_abort_ai);
 }
 
 /* 新任务开始时清掉上一次的中止标记（engine_clear_cancel 调用） */
-void ai_abort_reset(void)
+void abort_ctx_reset(abort_ctx_t *ctx)
 {
     abort_lock();
-    InterlockedExchange(&g_abort_flag, 0);
+    InterlockedExchange(&ctx->flag, 0);
+    /* 节点自带「已代关」标记随节点生灭，不再需要作废全局代关记录 */
+}
+
+void ai_abort_reset(void)
+{
+    abort_ctx_reset(g_abort_ai);
+}
+
+ai_req_node_t *ai_req_register(abort_ctx_t *ctx, HINTERNET h)
+{
+    struct ai_req_node *n;
+    abort_lock();
+    n = (struct ai_req_node *)calloc(1, sizeof(*n));
+    if (!n) return NULL;
+    n->h = h;
+    n->ctx = ctx;
     EnterCriticalSection(&g_abort_cs);
-    g_aborted_req = NULL;   /* 新任务开始，作废上一轮的代关记录（防句柄值复用误判） */
+    n->next = ctx->reqs;
+    ctx->reqs = n;
     LeaveCriticalSection(&g_abort_cs);
+    return n;
+}
+
+/* 摘除并释放节点。返回 1 = 取消线程已代关句柄，调用方不得再关
+   （句柄值可能已被新请求复用，二次关闭会误杀他人连接） */
+int ai_req_unregister(ai_req_node_t *n)
+{
+    int closed_by_abort;
+    if (!n) return 0;
+    EnterCriticalSection(&g_abort_cs);
+    for (struct ai_req_node **pp = &n->ctx->reqs; *pp; pp = &(*pp)->next) {
+        if (*pp == n) { *pp = n->next; break; }
+    }
+    closed_by_abort = n->aborted ? 1 : 0;
+    LeaveCriticalSection(&g_abort_cs);
+    free(n);
+    return closed_by_abort;
 }
 
 void abort_err(char **err_out)
@@ -120,11 +190,11 @@ void abort_err(char **err_out)
 /* 可打断睡眠：按 100ms 切片，abort/退出时立刻醒。
    没有它，WM_DESTROY 等工作线程收场（3 秒预算）就是空等——线程可能
    正卡在 30 秒退避或限流睡眠里，而关窗不能陪它睡（P1）。 */
-static void abortable_sleep(DWORD ms)
+void abortable_sleep(abort_ctx_t *ctx, DWORD ms)
 {
     DWORD waited = 0;
     while (waited < ms) {
-        if (ai_aborted()) return;
+        if (abort_ctx_aborted(ctx)) return;
         Sleep(100);
         waited += 100;
     }
@@ -135,7 +205,7 @@ static void retry_backoff_sleep(int attempt)
 {
     DWORD ms = 2000u << (attempt > 4 ? 4 : attempt);
     if (ms > 30000) ms = 30000;
-    abortable_sleep(ms);
+    abortable_sleep(g_abort_ai, ms);
 }
 
 /* ============== 配置管理 ============== */

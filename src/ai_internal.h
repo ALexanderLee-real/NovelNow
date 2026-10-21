@@ -59,17 +59,28 @@ void sse_reset(sse_ctx_t *s);
 void sse_on_chunk(const char *data, size_t len, void *ud);
 
 /* ---- ai_api.c (abort channel, read by request code) ----
-   不变量：任何走 ai_http 的请求必持忙位（try_begin_task），全局同时只有
-   一个在途请求（comfy 走自己的 chttp_do 栈、不进注册表），所以
-   g_active_req/g_aborted_req 单槽够用——新增并发调用点前先推翻这个前提。 */
+   取消通道上下文化（2026-10-19）：两个独立通道——g_abort_ai（AI 文本请求）
+   与 g_abort_comfy（ComfyUI 图片请求）。产品语义「并行互不打断」（见
+   comfy_api.c 头注释）由通道隔离保证：取消 AI 不掐 comfy、取消 comfy 不掐
+   AI；关窗走 ai_abort_all() 两条都掐。
+   在途请求登记成链表节点，节点自带「取消线程已代关」标记——句柄值可能被
+   新请求复用，靠全局记句柄值会误杀他人连接（单槽 g_active_req/g_aborted_req
+   时代的教训，已废除）。 */
+typedef struct abort_ctx abort_ctx_t;
+typedef struct ai_req_node ai_req_node_t;
+extern abort_ctx_t *g_abort_ai;
+extern abort_ctx_t *g_abort_comfy;
 void abort_lock(void);
-int ai_aborted(void);
+int ai_aborted(void);                       /* 读 g_abort_ai（AI 请求侧惯用） */
+int abort_ctx_aborted(abort_ctx_t *ctx);
+void abort_ctx_abort(abort_ctx_t *ctx);     /* 掐断该通道所有在途请求 */
+void abort_ctx_reset(abort_ctx_t *ctx);
 void abort_err(char **err_out);
+void abortable_sleep(abort_ctx_t *ctx, DWORD ms);
+ai_req_node_t *ai_req_register(abort_ctx_t *ctx, HINTERNET h);  /* NULL=OOM，调用方自己关句柄 */
+int ai_req_unregister(ai_req_node_t *n);    /* 1=取消线程已代关，调用方不得再关 */
 extern INIT_ONCE g_abort_once;
 extern CRITICAL_SECTION g_abort_cs;
-extern volatile LONG g_abort_flag;
-extern HINTERNET g_active_req;
-extern HINTERNET g_aborted_req;
 
 #endif /* AI_INTERNAL_H */
 

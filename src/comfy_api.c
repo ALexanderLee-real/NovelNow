@@ -1,9 +1,10 @@
 /* ============================================================
  * comfy_api.c — ComfyUI 本地生图后端（配图接口第一实现）
  *
- * 纯 WinInet HTTP 客户端，自包含请求逻辑（刻意不复用 ai_http.c 的
- * abort 句柄/限流，也不进 AI 的 g_active_req 注册表）——这样图片生成
- * 可以和 AI 文本任务**并行**跑，互不打断。
+ * 纯 WinInet HTTP 客户端，自包含请求逻辑（不复用 ai_http.c 的限流）。
+ * 取消走自己的通道 g_abort_comfy（2026-10-19 取消通道上下文化）：图片
+ * 生成可以和 AI 文本任务**并行**跑，取消 AI 不掐 comfy、取消 comfy 不掐
+ * AI（互不打断是产品语义）；关窗 ai_abort_all() 两条通道都掐。
  *
  * ComfyUI HTTP 协议只用三个接口：
  *   POST /prompt            提交工作流（body: {"prompt":<工作流>,"client_id":...}）
@@ -18,6 +19,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "ai_internal.h"   /* 取消通道 g_abort_comfy + 在途句柄登记 */
 
 #pragma comment(lib, "wininet.lib")
 
@@ -57,7 +60,9 @@ static int cbuf_add(cbuf_t *b, const void *p, size_t n)
     return 1;
 }
 
-/* ---------- URL 拆解（只支持 http/https，风格照 ai_http.c 的 parse_url） ---------- */
+/* ---------- URL 拆解（只支持 http/https，风格照 ai_http.c 的 parse_url） ----------
+   返回值口径与 parse_url 统一：0=成功、-1=失败（2026-10-19 前是 1=成功，
+   两栈语义相反是 P1 技术债，已统一） */
 typedef struct {
     char host[256];
     INTERNET_PORT port;
@@ -70,28 +75,36 @@ static int cparse_url(const char *url, cparts_t *p)
     const char *s = url, *h, *e;
     size_t n;
     memset(p, 0, sizeof(*p));
-    if (!url || !*url) return 0;
+    if (!url || !*url) return -1;
     if (_strnicmp(s, "https://", 8) == 0) { p->https = 1; p->port = 443; s += 8; }
     else if (_strnicmp(s, "http://", 7) == 0) { p->port = 80; s += 7; }
-    else return 0;
+    else return -1;
     h = s;
     while (*s && *s != '/' && *s != ':') s++;
     n = (size_t)(s - h);
-    if (n == 0 || n >= sizeof(p->host)) return 0;
+    if (n == 0 || n >= sizeof(p->host)) return -1;
     memcpy(p->host, h, n);
     p->host[n] = '\0';
     if (*s == ':') {
         int port = 0;
+        int ndig = 0;
         s++;
-        while (*s >= '0' && *s <= '9') { port = port * 10 + (*s - '0'); s++; }
-        if (port <= 0 || port > 65535) return 0;
+        while (*s >= '0' && *s <= '9') {
+            if (++ndig > 5) return -1;   /* 5 位封顶：防超长数字溢出绕过范围检查 */
+            port = port * 10 + (*s - '0');
+            s++;
+        }
+        /* 端口必须纯数字后紧跟路径或结尾："host:8080abc" 的尾巴混进 path
+           会把请求打到错误的接口上（与 parse_url 的严格校验对齐） */
+        if (port <= 0 || port > 65535) return -1;
+        if (*s && *s != '/') return -1;
         p->port = (INTERNET_PORT)port;
     }
-    if (!*s) { strcpy(p->path, "/"); return 1; }
+    if (!*s) { strcpy(p->path, "/"); return 0; }
     e = s + strlen(s);
-    if ((size_t)(e - s) >= sizeof(p->path)) return 0;
+    if ((size_t)(e - s) >= sizeof(p->path)) return -1;
     memcpy(p->path, s, (size_t)(e - s) + 1);
-    return 1;
+    return 0;
 }
 
 /* ---------- 一次 HTTP 请求：响应收集进 cbuf ---------- */
@@ -103,8 +116,9 @@ static int chttp_do(const char *method, const char *url,
     HINTERNET hInet = NULL, hConn = NULL, hReq = NULL;
     DWORD status = 0, slen = sizeof(status);
     int ok = 0;
+    ai_req_node_t *req_node = NULL;   /* 在途句柄登记节点（out: 统一摘除） */
 
-    if (!cparse_url(url, &p)) {
+    if (cparse_url(url, &p) != 0) {
         snprintf(err, errlen, "地址格式不对：%s", url ? url : "(空)");
         return -1;
     }
@@ -130,6 +144,8 @@ static int chttp_do(const char *method, const char *url,
         snprintf(err, errlen, "发送请求失败（错误码 %lu）", GetLastError());
         goto out;
     }
+    /* 登记在途句柄进 comfy 通道：取消/关窗能立刻掐断阻塞读 */
+    req_node = ai_req_register(g_abort_comfy, hReq);
     if (!HttpQueryInfoA(hReq, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &status, &slen, NULL)) {
         snprintf(err, errlen, "读取 HTTP 状态失败"); goto out;
     }
@@ -153,9 +169,13 @@ static int chttp_do(const char *method, const char *url,
     }
     ok = 1;
 out:
-    if (hReq) InternetCloseHandle(hReq);
+    if (hReq) {
+        /* 1=取消线程已代关，不许再关（句柄值可能已被新请求复用，会误杀他人） */
+        if (!ai_req_unregister(req_node)) InternetCloseHandle(hReq);
+    }
     if (hConn) InternetCloseHandle(hConn);
     if (hInet) InternetCloseHandle(hInet);
+    if (!ok && abort_ctx_aborted(g_abort_comfy)) snprintf(err, errlen, "已取消");
     return ok ? 0 : -1;
 }
 
@@ -315,7 +335,8 @@ int comfy_generate(const char *base_url, const char *workflow_json,
     ULONGLONG poll_deadline = GetTickCount64() + 5ull * 60 * 1000;
     for (i = 0; i < COMFY_POLL_MAX && GetTickCount64() < poll_deadline; i++) {
         cJSON *entry, *status_obj, *ss;
-        Sleep(1000);
+        abortable_sleep(g_abort_comfy, 1000);   /* 可打断：取消/关窗不再傻睡满 1 秒 × 300 */
+        if (abort_ctx_aborted(g_abort_comfy)) { snprintf(err, errlen, "已取消"); goto done; }
         cbuf_free(&resp);
         snprintf(url, sizeof(url), "%s/history/%s", base_url, prompt_id);
         if (chttp_do("GET", url, NULL, 0, 30, &resp, err, errlen) != 0) goto done;

@@ -1044,7 +1044,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         post_retry_clear();
         ask_release_all();
         /* 中止在途 AI 请求，让退避/限流睡眠立刻醒来，工作线程好收场 */
-        ai_abort_current();
+        ai_abort_all();   /* 关窗：AI + comfy 两条通道都掐（2026-10-19 通道上下文化后 comfy 也可掐） */
         /* 等工作线程收场（最多 3 秒），再拆共享对象（P1 竞态）。
            为什么限时：HttpSendRequest 发送阶段不可打断（g_active_req 在发送
            之后才登记），最坏卡 timeout 秒，关窗不能陪它卡。

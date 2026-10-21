@@ -188,11 +188,8 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
         return NULL;
     }
 
-    /* 登记在途句柄：取消线程会关闭它来立即中断阻塞读 */
-    abort_lock();
-    EnterCriticalSection(&g_abort_cs);
-    g_active_req = hReq;
-    LeaveCriticalSection(&g_abort_cs);
+    /* 登记在途句柄：取消线程会遍历注册表关闭它们，立即中断阻塞读 */
+    ai_req_node_t *req_node = ai_req_register(g_abort_ai, hReq);
 
     /* 状态码先于读体查询：非 2xx 的错误体绝不能喂给 on_body——SSE 解析器
        会把它收进 sse.content，让「content 为空才重试」的重试判定失效（P1） */
@@ -225,17 +222,12 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
         http_buf_append(&resp_buf, chunk, bytes_read);
         if (on_body && ok_status) on_body(chunk, bytes_read, ud);
     }
-    /* 注销在途句柄（真正的关闭统一放请求线程，重复关闭安全） */
-    EnterCriticalSection(&g_abort_cs);
-    if (g_active_req == hReq) g_active_req = NULL;   /* 只清自己的登记：别抹掉后来者的注册 */
-    LeaveCriticalSection(&g_abort_cs);
+    /* 注销登记：返回 1 = 取消线程已代关 hReq，之后所有出口都不许再关 */
+    int closed_by_abort = ai_req_unregister(req_node);
 
     if (ai_aborted()) {
         http_buf_free(&resp_buf);
         /* abort 线程已代关 hReq 时不能再关：句柄值可能已被新请求复用，会误杀他人 */
-        EnterCriticalSection(&g_abort_cs);
-        int closed_by_abort = (g_aborted_req == hReq);
-        LeaveCriticalSection(&g_abort_cs);
         if (!closed_by_abort) InternetCloseHandle(hReq);
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInet);
@@ -246,7 +238,7 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
         if (err_out) *err_out = str_dup(read_ok ? "响应读取内存不足"
                                                 : "Connection lost while reading response");
         http_buf_free(&resp_buf);
-        InternetCloseHandle(hReq);
+        if (!closed_by_abort) InternetCloseHandle(hReq);
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInet);
         return NULL;
@@ -264,13 +256,13 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
             }
         }
         http_buf_free(&resp_buf);
-        InternetCloseHandle(hReq);
+        if (!closed_by_abort) InternetCloseHandle(hReq);
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInet);
         return NULL;
     }
 
-    InternetCloseHandle(hReq);
+    if (!closed_by_abort) InternetCloseHandle(hReq);
     InternetCloseHandle(hConnect);
     InternetCloseHandle(hInet);
 
