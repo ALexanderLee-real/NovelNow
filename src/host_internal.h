@@ -29,7 +29,7 @@
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 #endif
 
-#define NW_VERSION L"0.2.12"
+#define NW_VERSION L"0.2.13"
 
 /* from host.c:54-66 */
 typedef struct {

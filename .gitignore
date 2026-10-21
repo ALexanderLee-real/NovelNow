@@ -60,6 +60,7 @@ desktop.ini
 # 仅上传源码：以下内容不进仓库（随 release 压缩包分发）
 # ============================================================
 bin/
+_packtemp/
 HANDOFF.md
 接手计划书.md
 PROGRESS.md
