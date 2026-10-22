@@ -256,15 +256,15 @@
     <!-- ---------- GalNow（扩展模块：剧情分支 + 配图工坊，页内子页） ---------- -->
     <section class="page" data-page="galnow">
       <div class="galnow-tabs" id="galnowTabs">
-        <button class="galnow-tab is-active" data-pane="gal">剧情分支</button>
+        <button class="galnow-tab is-active" data-pane="gal">小说剧场</button>
         <button class="galnow-tab" data-pane="comfy">配图工坊</button>
       </div>
 
       <!-- 子页 1：剧情分支 -->
       <div class="galnow-pane is-active" data-pane="gal">
       <header class="page-head">
-        <h1>剧情分支</h1>
-        <p>写下想法，实时生成剧情；到节点时做出选择，故事随你的选择分叉。</p>
+        <h1>SinkNow · 小说剧场</h1>
+        <p>丢一篇 TXT 小说进来，AI 扒出剧情和人物、配上立绘与场景，像看故事一样把它读完。</p>
       </header>
 
       <div class="gal-layout">
@@ -272,51 +272,67 @@
         <div class="gal-main">
           <div class="card">
             <div class="card-head">
-              <h2>想法</h2>
-              <span class="hint" id="galPhase">未开始</span>
+              <h2>导入与制作</h2>
+              <span class="hint" id="novelPhase">未开始</span>
             </div>
-            <textarea id="galIdea" class="ta" rows="3"
-              placeholder="例如：被困在轮回小镇的少女，每到午夜就会失去当天的记忆，唯有手腕上的字迹提醒她有人来过…"></textarea>
             <div class="row-between">
-              <div class="inline-fields">
-                <label class="field sm"><span>路线数</span><input type="number" id="galRoutes" value="3" min="1" max="5"></label>
-                <label class="field sm"><span>每节点字数</span><input type="number" id="galWords" value="1000" min="500" max="2000" step="100"></label>
+              <div class="gal-btns">
+                <button class="btn primary" id="novelBtnImport">丢小说进来（TXT）</button>
+                <button class="btn accent" id="novelBtnAnalyze">AI 扒剧情+人物</button>
+                <button class="btn ghost" id="novelBtnFigures">生成人物立绘</button>
               </div>
               <div class="gal-btns">
-                <button class="btn ghost" id="galBtnReset">重新开始</button>
-                <button class="btn primary" id="galBtnStart">生成企划并开局</button>
-                <button class="btn accent" id="galBtnNext" disabled>继续剧情</button>
+                <button class="btn ghost" id="novelBtnPrev">上一章</button>
+                <button class="btn primary" id="novelBtnPlay">开演</button>
+                <button class="btn ghost" id="novelBtnNext">下一章</button>
+                <button class="btn ghost" id="novelBtnAuto">自动连播：关</button>
               </div>
             </div>
           </div>
 
           <div class="card gal-stage" id="galStage">
             <div class="gal-stage-head">
-              <h2>剧情演出</h2>
+              <h2>小说演出</h2>
               <span class="gal-nametag" id="galNodeInfo">—</span>
             </div>
-            <div class="gal-text" id="galText">
-              <div class="gal-empty">尚未开始。写下想法，点「生成企划并开局」。</div>
+            <!-- 舞台（形似 WebGAL：背景层 + 立绘层 + 黑幕 + 对话框 + 选项 + 快捷条） -->
+            <div class="stage-view" id="stageView">
+              <div class="stage-bgs" id="stageBgs"></div>
+              <div class="stage-vignette"></div>
+              <div class="stage-figs" id="stageFigs">
+                <div class="stage-fig-slot" data-pos="left"></div>
+                <div class="stage-fig-slot" data-pos="center"></div>
+                <div class="stage-fig-slot" data-pos="right"></div>
+              </div>
+              <div class="stage-intro" id="stageIntro" hidden></div>
+              <div class="stage-choices" id="galChoices"></div>
+              <div class="stage-dialog" id="stageDialog">
+                <div class="stage-name" id="stageName" hidden></div>
+                <div class="gal-text" id="galText">
+                  <div class="gal-empty">把 TXT 小说丢进来，SinkNow 把它变成故事。</div>
+                </div>
+                <div class="stage-hint" id="stageHint"></div>
+              </div>
+              <div class="stage-tools">
+                <button class="stage-tool" id="stageBtnAuto" type="button">自动</button>
+              </div>
             </div>
-            <div class="gal-choices" id="galChoices"></div>
           </div>
         </div>
 
-        <!-- 右：状态与剧情树 -->
+        <!-- 右：章节与人物 -->
         <div class="gal-side">
           <div class="card">
-            <div class="card-head"><h2>状态</h2></div>
-            <div class="gal-flags" id="galFlags">
-              <div class="gal-flag"><span>好感</span><b id="galFavor">0</b></div>
-              <div class="gal-flag"><span>信任</span><b id="galTrust">0</b></div>
-              <div class="gal-flag"><span>理智</span><b id="galSanity">0</b></div>
-              <div class="gal-flag"><span>真相碎片</span><b id="galShards">0</b></div>
-            </div>
-            <div class="gal-bools" id="galBools"><span class="hint">尚无旗标</span></div>
+            <div class="card-head"><h2>章节</h2><span class="hint" id="novelPhase2">0 章</span></div>
+            <div class="gal-tree" id="novelChapters"><span class="hint">尚未导入小说</span></div>
           </div>
           <div class="card">
-            <div class="card-head"><h2>剧情树</h2><span class="hint" id="galTreeInfo">0 节点</span></div>
-            <div class="gal-tree" id="galTree"><span class="hint">尚无节点</span></div>
+            <div class="card-head"><h2>剧情梗概</h2></div>
+            <div class="hint" id="novelInfo">把 TXT 小说丢进来，SinkNow 把它变成故事</div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>人物</h2><span class="hint">定妆表</span></div>
+            <div class="gal-tree" id="novelCast"><span class="hint">人物待扒</span></div>
           </div>
         </div>
       </div>
@@ -326,7 +342,7 @@
       <div class="galnow-pane" data-pane="comfy">
       <header class="page-head">
         <h1>配图工坊</h1>
-        <p>剧情分支的场景背景图，交给本地 ComfyUI 提前生成。</p>
+        <p>小说剧场的场景背景图与人物立绘，交给本地 ComfyUI 提前生成。</p>
       </header>
 
       <div class="card">
@@ -337,7 +353,7 @@
             <li>准备一份<strong>工作流 JSON</strong>（ComfyUI 里「导出 (API)」得到的 API 格式），并把<strong>正向提示词节点的文本里写上 <code>{{PROMPT}}</code></strong> 占位符——生成时会替换成剧情摘要。</li>
             <li>默认连接 <code>http://127.0.0.1:8188</code>（ComfyUI 默认端口）。本程序只发起<strong>出站</strong>连接，不会占用或开放任何端口。</li>
             <li>跨机器使用：ComfyUI 启动时加 <code>--listen 0.0.0.0</code> 并放行 8188/TCP，然后把下面的地址改成那台机器的 <code>http://IP:8188</code>。</li>
-            <li>生成的图存在程序目录 <code>舞台图片\</code> 下（每项目一个子文件夹，节点名.png），自动铺到剧情分支的舞台背景。</li>
+            <li>生成的图存在程序目录 <code>舞台图片\</code> 下（每项目一个子文件夹，节点名.png），自动铺到小说剧场的舞台背景。</li>
           </ol>
         </div>
       </div>
@@ -516,7 +532,8 @@
 <script src="render_ui.js"></script>
 <script src="render_pages.js"></script>
 <script src="render_forms.js"></script>
-<script src="gal.js"></script>
+<script src="stage.js"></script>
+<script src="novel.js"></script>
 <script src="comfy.js"></script>
 <script src="actions.js"></script>
 </body>

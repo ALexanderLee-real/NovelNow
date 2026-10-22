@@ -132,11 +132,9 @@ function onMessage(m) {
 
     case 'text_delta':
       /* 通用流式增量（方向/方案/大纲/一致性检查）：浮动面板逐字刷。
-         galgame 场景流式期间改道到剧情舞台；L1 企划/L2 大纲是 JSON 元数据，
-         只静默丢弃（结果走 task_done 全文），别把裸 JSON 刷进流式面板。 */
-      /* typeof G 守卫：纯小说版没有 gal.js，全按通用流式走 */
-      if (typeof G !== 'undefined' && G.awaiting === 'scene') galStream(d.delta);
-      else if (typeof G !== 'undefined' && G.awaiting) { /* L1/L2：静默 */ }
+         SinkNow 管线（N.awaiting）的 AI 回复是 JSON/剧本元数据，
+         流式期间静默丢弃（结果走 task_done 全文），别把裸 JSON 刷进面板。 */
+      if (typeof N !== 'undefined' && N.awaiting) { /* SinkNow 管线：静默 */ }
       else streamFeed(d.delta);
       break;
 
@@ -173,17 +171,17 @@ function onMessage(m) {
 }
 
 function handleTaskDone(d) {
-  /* 通用 AI 调用（galgame 管线）：结果走 d.text（typeof G：纯小说版无 gal.js） */
-  if (typeof G !== 'undefined' && d.cmd === 'ai_call') { galOnDone(d); return; }
-  /* 兜底：单任务互斥下 aiCall 挂着时不可能有别的 task_done 到达；
-     到了就说明 aiCall 已被取消/顶掉——收掉防 Promise 悬挂 */
-  if (typeof G !== 'undefined' && G.cb) {
-    const prev = G.cb; G.cb = null;
-    G.awaiting = null;
+  /* SinkNow 管线的通用 AI 调用：结果走 d.text（typeof N：纯小说版无 novel.js） */
+  if (typeof N !== 'undefined' && d.cmd === 'ai_call') { novelOnDone(d); return; }
+  /* 兜底：单任务互斥下 novelAiCall 挂着时不可能有别的 task_done 到达；
+     到了就说明调用已被取消/顶掉——收掉防 Promise 悬挂 */
+  if (typeof N !== 'undefined' && N.cb) {
+    const prev = N.cb; N.cb = null;
+    N.awaiting = null;
     prev.reject(new Error('任务已结束（' + (d.cmd || '') + '）'));
   }
-  /* 切换项目后恢复剧情分支状态 */
-  if (d.cmd === 'load_project' && typeof galLoad === 'function') galLoad();
+  /* 切换项目后恢复 SinkNow 状态 */
+  if (d.cmd === 'load_project' && typeof novelRestore === 'function') novelRestore();
 
   /* 项目结构变化的命令：刷新章节列表等 */
   if (d.cmd === 'fetch_models' && d.ok && d.models) {

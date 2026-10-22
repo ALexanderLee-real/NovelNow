@@ -585,6 +585,7 @@ static void h_get_chapter(cJSON *root, const char *cmd, int id)
         add_str(d, "title", c->title);
         add_str(d, "summary", c->summary);
         add_str(d, "content", c->content);
+        add_str(d, "playScript", c->play_script);
         cJSON_AddNumberToObject(d, "wordCount", c->word_count);
         cJSON_AddNumberToObject(d, "status", c->status);
         reply_ok(id, cmd, d);
@@ -1344,6 +1345,256 @@ static void h_auto_write(cJSON *root, const char *cmd, int id)
 
 #undef ACCEPT_ASYNC
 
+/* ============ SinkNow：小说导入（丢 TXT 进来 → 切章 → 建项目） ============
+   只做切章建档这一件事；剧情/人物/演出全交给前端 novel.js 管线驱动 AI。
+   切章规则：找「第N章/回/节/卷」类标题行，找不到就按 3000 字一块硬切。 */
+static int novel_line_is_chapter_head(const char *line, size_t len)
+{
+    /* 行首「第」+数字/中文数字+「章/回/节/卷/幕」，或 "Chapter N"（大小写不敏感）；
+       标题行还要求够短（< 60 字节），防正文里出现「第二天早上…」误判 */
+    size_t i = 0;
+    while (i < len && (line[i] == ' ' || line[i] == '\t')) i++;
+    if (i >= len) return 0;
+    if ((len - i) > 2 && line[i] == (char)0xE7 && line[i + 1] == (char)0xAC &&
+        line[i + 2] == (char)0xAC) {   /* 「第」 */
+        size_t j = i + 3;
+        int has_num = 0;
+        while (j < len) {
+            unsigned char c = (unsigned char)line[j];
+            if (c >= '0' && c <= '9') { has_num = 1; j++; continue; }
+            /* 中文数字一字一字吃（「十二」两字） */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xB8 &&
+                line[j + 2] == (char)0x80) { has_num = 1; j += 3; continue; } /* 一 */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xBA &&
+                line[j + 2] == (char)0x8C) { has_num = 1; j += 3; continue; } /* 二 */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xB8 &&
+                line[j + 2] == (char)0x89) { has_num = 1; j += 3; continue; } /* 三 */
+            if (j + 2 < len && line[j] == (char)0xE5 && line[j + 1] == (char)0x9B &&
+                line[j + 2] == (char)0x9B) { has_num = 1; j += 3; continue; } /* 四 */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xBA &&
+                line[j + 2] == (char)0x94) { has_num = 1; j += 3; continue; } /* 五 */
+            if (j + 2 < len && line[j] == (char)0xE5 && line[j + 1] == (char)0x85 &&
+                line[j + 2] == (char)0xAD) { has_num = 1; j += 3; continue; } /* 六 */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xB8 &&
+                line[j + 2] == (char)0x83) { has_num = 1; j += 3; continue; } /* 七 */
+            if (j + 2 < len && line[j] == (char)0xE5 && line[j + 1] == (char)0x85 &&
+                line[j + 2] == (char)0xAB) { has_num = 1; j += 3; continue; } /* 八 */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xB9 &&
+                line[j + 2] == (char)0x9D) { has_num = 1; j += 3; continue; } /* 九 */
+            if (j + 2 < len && line[j] == (char)0xE5 && line[j + 1] == (char)0x8D &&
+                line[j + 2] == (char)0x81) { has_num = 1; j += 3; continue; } /* 十 */
+            if (j + 2 < len && line[j] == (char)0xE7 && line[j + 1] == (char)0x99 &&
+                line[j + 2] == (char)0xBE) { has_num = 1; j += 3; continue; } /* 百 */
+            if (j + 2 < len && line[j] == (char)0xE5 && line[j + 1] == (char)0x8D &&
+                line[j + 2] == (char)0x83) { has_num = 1; j += 3; continue; } /* 千 */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xB8 &&
+                line[j + 2] == (char)0x87) { has_num = 1; j += 3; continue; } /* 万 */
+            if (j + 2 < len && line[j] == (char)0xE4 && line[j + 1] == (char)0xB8 &&
+                line[j + 2] == (char)0xA4) { has_num = 1; j += 3; continue; } /* 两 */
+            break;
+        }
+        if (!has_num) return 0;
+        /* 章/回/节/卷/幕 */
+        if (j + 2 < len) {
+            const char *unit = line + j;
+            if (memcmp(unit, "\xE7\xAB\xA0", 3) == 0 ||   /* 章 */
+                memcmp(unit, "\xE5\x9B\x9E", 3) == 0 ||   /* 回 */
+                memcmp(unit, "\xE8\x8A\x82", 3) == 0 ||   /* 节 */
+                memcmp(unit, "\xE5\x8D\xB7", 3) == 0 ||   /* 卷 */
+                memcmp(unit, "\xE5\xB9\x95", 3) == 0)     /* 幕 */
+                return (len - i) < 60;
+        }
+        return 0;
+    }
+    /* Chapter N / CHAPTER N */
+    if ((len - i) >= 7 && (line[i] == 'C' || line[i] == 'c') &&
+        (line[i + 1] == 'h' || line[i + 1] == 'H')) {
+        size_t j = i;
+        while (j < len && ((line[j] >= 'a' && line[j] <= 'z') ||
+                           (line[j] >= 'A' && line[j] <= 'Z'))) j++;
+        while (j < len && (line[j] == ' ' || line[j] == '.' || line[j] == '、')) j++;
+        if (j < len && line[j] >= '0' && line[j] <= '9') return (len - i) < 60;
+    }
+    return 0;
+}
+
+static void h_import_novel(cJSON *root, const char *cmd, int id)
+{
+    /* 丢 TXT 小说进 SinkNow：读文件 → 切章 → 项目章节建档。
+       AI 扒剧情/人物/演出由前端 novel.js 管线随后驱动（ai_call），
+       这里不碰 AI、不占线程——纯文件 IO + 切章。 */
+    const char *path = p_str(root, "path", NULL);
+    const char *name = p_str(root, "name", NULL);
+    char *text;
+    const char *p, *q, *line_end;
+    const char *chap_start = NULL;
+    const char *head = NULL;      /* 当前章标题行 */
+    int chap_n = 0;
+    if (require_idle_reply(id, cmd, "导入小说")) return;
+    if (!path || !*path) { reply_err(id, cmd, "缺少文件路径"); return; }
+    text = read_text_file_smart(path, 8 * 1024 * 1024);
+    if (!text || !*text) {
+        free(text);
+        reply_err(id, cmd, "文件读取失败或内容为空（仅支持 txt，最大 8MB）");
+        return;
+    }
+    if (need_discard_confirm(root)) { free(text); reply_need_discard(id, cmd); return; }
+    if (g.project) { project_destroy(g.project); g.project = NULL; }
+    /* 项目名：前端给的 name，或文件名（去扩展名） */
+    {
+        char pname[256];
+        const char *base, *dot;
+        if (name && *name) {
+            snprintf(pname, sizeof(pname), "%s", name);
+        } else {
+            base = path;
+            for (const char *s = path; *s; s++) if (*s == '\\' || *s == '/') base = s + 1;
+            snprintf(pname, sizeof(pname), "%s", base);
+            dot = strrchr(pname, '.');
+            if (dot && dot != pname) pname[dot - pname] = '\0';
+            if (!pname[0]) snprintf(pname, sizeof(pname), "导入的小说");
+        }
+        g.project = project_create(pname, "SinkNow 导入小说");
+    }
+    if (!g.project) {
+        free(text);
+        reply_err(id, cmd, "内存不足，无法创建项目");
+        return;
+    }
+    g.selected_chapter = -1;
+    /* 切章：逐行扫标题行 */
+    p = text;
+    while (*p) {
+        size_t len;
+        q = strchr(p, '\n');
+        line_end = q ? q : p + strlen(p);
+        len = (size_t)(line_end - p);
+        if (len && p[len - 1] == '\r') len--;
+        if (novel_line_is_chapter_head(p, len)) {
+            /* 收上一章 */
+            if (chap_start) {
+                const char *end = p;
+                while (end > chap_start && (end[-1] == '\n' || end[-1] == '\r')) end--;
+                {
+                    size_t blen = (size_t)(end - chap_start);
+                    char *body = (char *)malloc(blen + 1);
+                    if (body) {
+                        char hbuf[160];
+                        memcpy(body, chap_start, blen);
+                        body[blen] = '\0';
+                        {
+                            size_t hlen = (size_t)(line_end - head);
+                            if (hlen > sizeof(hbuf) - 1) hlen = sizeof(hbuf) - 1;
+                            memcpy(hbuf, head, hlen);
+                            hbuf[hlen] = '\0';
+                        }
+                        project_add_chapter(g.project, hbuf, "");
+                        project_update_chapter_content(g.project, chap_n, body);
+                        chap_n++;
+                        free(body);
+                    }
+                }
+            }
+            head = p;
+            chap_start = line_end;
+            if (*chap_start == '\r') chap_start++;
+            if (*chap_start == '\n') chap_start++;
+        }
+        if (!q) break;
+        p = q + 1;
+    }
+    /* 尾章 */
+    if (chap_start && *chap_start) {
+        const char *end = text + strlen(text);
+        while (end > chap_start && (end[-1] == '\n' || end[-1] == '\r')) end--;
+        if (end > chap_start) {
+            size_t blen = (size_t)(end - chap_start);
+            char *body = (char *)malloc(blen + 1);
+            if (body) {
+                char hbuf[160];
+                memcpy(body, chap_start, blen);
+                body[blen] = '\0';
+                {
+                    size_t hlen = head ? (size_t)(strchr(head, '\n') ? strchr(head, '\n') - head : strlen(head)) : 0;
+                    if (head && hlen && head[hlen - 1] == '\r') hlen--;
+                    if (hlen > sizeof(hbuf) - 1) hlen = sizeof(hbuf) - 1;
+                    if (head && hlen) memcpy(hbuf, head, hlen);
+                    else { memcpy(hbuf, "正文", 4); hlen = 4; }
+                    hbuf[hlen] = '\0';
+                }
+                project_add_chapter(g.project, hbuf, "");
+                project_update_chapter_content(g.project, chap_n, body);
+                chap_n++;
+                free(body);
+            }
+        }
+    }
+    /* 一个标题行都没认出来：整本当一章硬切不了就整段进「全文」 */
+    if (chap_n == 0) {
+        project_add_chapter(g.project, "全文", "");
+        project_update_chapter_content(g.project, 0, text);
+        chap_n = 1;
+    }
+    free(text);
+    g.dirty = 1;
+    {
+        cJSON *d = cJSON_CreateObject();
+        cJSON_AddNumberToObject(d, "chapters", chap_n);
+        cJSON_AddItemToObject(d, "project", project_meta_json(g.project));
+        reply_ok(id, cmd, d);
+    }
+    push_project();
+    push_status("小说已导入，等待 AI 扒演出");
+    return;
+}
+
+static void h_set_play_script(cJSON *root, const char *cmd, int id)
+{
+    /* 演出脚本落章节字段 play_script；忙时 worker 不碰它（只有前端管线写），
+       但沿用同一把门闩免得和 set_chapter 之类并发互踩 */
+    int idx = p_int(root, "index", -1);
+    const char *script = p_str(root, "script", NULL);
+    if (require_idle_reply(id, cmd, "保存演出脚本")) return;
+    if (check_project(id, cmd)) return;
+    if (idx < 0 || idx >= g.project->chapter_count) { reply_err(id, cmd, "章节不存在"); return; }
+    if (!script) script = "";
+    project_set_chapter_play_script(g.project, idx, script);
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+static void h_get_novel(cJSON *root, const char *cmd, int id)
+{
+    /* SinkNow 分析块（剧情梗概+人物定妆表）读快照，同 get_gal 过门闩 */
+    if (require_idle_reply(id, cmd, "读取小说分析块")) return;
+    {
+        cJSON *d = cJSON_CreateObject();
+        add_str(d, "novel", (g.project && g.project->novel_json) ? g.project->novel_json : "{}");
+        reply_ok(id, cmd, d);
+    }
+    return;
+}
+
+static void h_set_novel(cJSON *root, const char *cmd, int id)
+{
+    const char *js = p_str(root, "json", NULL);
+    if (require_idle_reply(id, cmd, "保存小说分析块")) return;
+    if (check_project(id, cmd)) return;
+    if (!js) { reply_err(id, cmd, "缺少 json"); return; }
+    {
+        /* 先 dup 判空再换指针：str_dup 失败置 NULL = 静默丢分析块（同 set_gal 教训） */
+        char *copy = str_dup(js);
+        if (!copy) { reply_err(id, cmd, "内存不足"); return; }
+        free(g.project->novel_json);
+        g.project->novel_json = copy;
+    }
+    g.dirty = 1;
+    reply_ok(id, cmd, NULL);
+    return;
+}
+
+
 static void h_import_txt(cJSON *root, const char *cmd, int id)
 {
     const char *path = p_str(root, "path", NULL);
@@ -1464,6 +1715,11 @@ static void h_comfy_gen(cJSON *root, const char *cmd, int id)
        装进 Program Files 时可能没写权限，ensure_dir 失败会报「无法创建图片目录」） */
     const char *node = p_str(root, "node", "");
     const char *prompt = p_str(root, "prompt", "");
+    /* SinkNow 立绘：kind=bg（默认，舞台背景，沿用 <proj_id>/<node>.png）
+       kind=figures（人物立绘，落 <proj_id>/figures/<name>.png，name 可中文）。
+       node 仍是 ASCII 事件键（comfy_done 对账用）；name 是落盘文件名。 */
+    const char *kind = p_str(root, "kind", "bg");
+    const char *name = p_str(root, "name", NULL);
     const char *wf_path = (g.config && g.config->comfy_workflow_path)
                           ? g.config->comfy_workflow_path : NULL;
     char *wf = NULL, *proj_dir = NULL, *img_dir = NULL, *out_path = NULL;
@@ -1511,7 +1767,47 @@ static void h_comfy_gen(cJSON *root, const char *cmd, int id)
     }
     {
         char fname[320];
-        snprintf(fname, sizeof(fname), "%s.png", node);
+        /* kind=figures：进 figures\ 子目录，文件名用 name（可中文，走 stage_asset 同款围栏） */
+        if (strcmp(kind, "figures") == 0) {
+            char *sub;
+            const char *fn = (name && *name) ? name : node;
+            for (i = 0; fn[i]; i++) {
+                unsigned char c = (unsigned char)fn[i];
+                if (c == '.' && fn[i + 1] == '.') {
+                    reply_err(id, cmd, "name 不许含 .."); free(wf); free(img_dir); return;
+                }
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                      (c >= 'A' && c <= 'Z') || c == '_' || c == '-' || c == '.' ||
+                      c >= 0x80)) {
+                    reply_err(id, cmd, "name 只允许字母/数字/_/-/. 与中文");
+                    free(wf); free(img_dir); return;
+                }
+            }
+            sub = path_join(img_dir, "figures");
+            free(img_dir);
+            img_dir = sub;
+            if (!img_dir || ensure_dir(img_dir) != 0) {
+                free(wf); free(img_dir); reply_err(id, cmd, "无法创建立绘目录"); return;
+            }
+            snprintf(fname, sizeof(fname), "%s.png", fn);
+        } else {
+            /* bg：kind 参数带 name 时用 name（SinkNow 剧本场景键，可能中文），
+               否则用 node（旧 comfy 管线契约）——都走 name 同款围栏 */
+            const char *fn = (name && *name) ? name : node;
+            for (i = 0; fn[i]; i++) {
+                unsigned char c = (unsigned char)fn[i];
+                if (c == '.' && fn[i + 1] == '.') {
+                    reply_err(id, cmd, "name 不许含 .."); free(wf); free(img_dir); return;
+                }
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                      (c >= 'A' && c <= 'Z') || c == '_' || c == '-' || c == '.' ||
+                      c >= 0x80)) {
+                    reply_err(id, cmd, "name 只允许字母/数字/_/-/. 与中文");
+                    free(wf); free(img_dir); return;
+                }
+            }
+            snprintf(fname, sizeof(fname), "%s.png", fn);
+        }
         out_path = path_join(img_dir, fname);
     }
     free(img_dir);
@@ -1537,6 +1833,66 @@ static void h_comfy_gen(cJSON *root, const char *cmd, int id)
     accepted = cJSON_CreateObject();
     cJSON_AddBoolToObject(accepted, "accepted", 1);
     reply_ok(id, cmd, accepted);
+    return;
+}
+
+
+static void h_stage_asset(cJSON *root, const char *cmd, int id)
+{
+    /* 舞台演出引擎资源读取（WebGAL 化演出）：→ data URL，前端当背景/立绘/BGM。
+       目录约定：bg → 舞台图片\<proj_id>\<name>（与 comfy 配图管线同目录，
+       comfy_gen 落盘的 <node>.png 直接能当背景）；
+       figures → 舞台图片\<proj_id>\figures\<name>；bgm → 舞台图片\<proj_id>\bgm\<name>。
+       围栏：kind 白名单；name 只允许字母数字/_/-/. 与 UTF-8 多字节（中文名），
+       禁「..」与任何路径分隔符——拼出的路径逃不出项目资源目录。
+       线程安全：只读磁盘 + proj->id 浅拷贝（id 是项目创建时定死的字符串，
+       工作线程不碰它；章节数组 realloc 与此无关），故忙时可用（演出/配图
+       生成并行是常态，P0-C 只禁深读 project）。 */
+    const char *kind = p_str(root, "kind", "bg");
+    const char *name = p_str(root, "name", "");
+    char pid[128], *base, *dir, *path, *data;
+    size_t i;
+
+    if (check_project(id, cmd)) return;
+    if (!name || !*name) { reply_err(id, cmd, "缺少 name（资源文件名）"); return; }
+    if (strlen(name) > 200 || strstr(name, "..")) {
+        reply_err(id, cmd, "name 不合法"); return;
+    }
+    for (i = 0; name[i]; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '_' || c == '-' || c == '.' || c >= 0x80)) {
+            reply_err(id, cmd, "name 只允许字母/数字/_/-/. 与中文"); return;
+        }
+    }
+    if (strcmp(kind, "bg") != 0 && strcmp(kind, "figures") != 0 && strcmp(kind, "bgm") != 0) {
+        reply_err(id, cmd, "kind 只允许 bg / figures / bgm"); return;
+    }
+    snprintf(pid, sizeof(pid), "%s", (g.project && g.project->id) ? g.project->id : "");
+    base = get_exe_dir();
+    dir = base ? path_join(base, "舞台图片") : NULL;
+    free(base);
+    { char *sub = dir ? path_join(dir, pid) : NULL; free(dir); dir = sub; }
+    if (dir && strcmp(kind, "bg") != 0) {   /* bg 就在项目资源目录根（comfy 管线约定） */
+        char *sub = path_join(dir, kind);
+        free(dir);
+        dir = sub;
+    }
+    path = dir ? path_join(dir, name) : NULL;
+    free(dir);
+    if (!path) { reply_err(id, cmd, "内存不足"); return; }
+    data = image_data_url(path);
+    free(path);
+    if (!data) {
+        reply_err(id, cmd, "资源尚未就绪或读取失败");
+        return;
+    }
+    {
+        cJSON *d = cJSON_CreateObject();
+        add_str(d, "data", data);
+        free(data);
+        reply_ok(id, cmd, d);
+    }
     return;
 }
 
@@ -1642,12 +1998,17 @@ static const struct { const char *name; cmd_fn_t fn; } k_cmds[] = {
     { "analyze_text", h_analyze_text },
     { "auto_write", h_auto_write },
     { "import_txt", h_import_txt },
+    { "import_novel", h_import_novel },       /* SinkNow：丢 TXT 切章建档 */
+    { "set_play_script", h_set_play_script }, /* SinkNow：演出脚本落章节 */
+    { "get_novel", h_get_novel },             /* SinkNow：分析块读 */
+    { "set_novel", h_set_novel },             /* SinkNow：分析块写 */
     { "ai_call", h_ai_call },
     { "get_gal", h_get_gal },
     { "set_gal", h_set_gal },
     { "comfy_test", h_comfy_test },
     { "comfy_gen", h_comfy_gen },
     { "read_image", h_read_image },
+    { "stage_asset", h_stage_asset },
     { "shutdown", h_shutdown },
 };
 

@@ -70,3 +70,9 @@ PROGRESS.md
 *.pre-split.bak
 build_out.txt
 
+# 验收截图与旧版验收工具（_cc.ps1 是现役验收工具，故意提交）
+_*.png
+_scan_click.ps1
+_stage_shot.ps1
+_shot.ps1
+

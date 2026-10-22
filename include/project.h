@@ -33,6 +33,8 @@ typedef struct {
     int iteration_count;  /* 迭代次数 */
     int memory_recorded;  /* 已记账：实际梗概+伏笔已登记（0=未，1=已）。
                              概要本身不能当记账标志——大纲生成的章自带概要 */
+    char *play_script;    /* SinkNow 舞台演出脚本（DSL 文本：【@背景】/【@立绘】/
+                             【说话人】台词…）。缺省 ""，没扒过演出的章就是空 */
 } chapter_t;
 
 /* 人物角色 */
@@ -127,7 +129,11 @@ typedef struct {
     
     /* galgame 实时分支剧情状态（整块 JSON 文本：节点树/flag/选项历史） */
     char *gal_json;
-    
+
+    /* SinkNow 小说演出分析块（整块 JSON 文本：剧情梗概 + 人物定妆表
+       [{name, look, prompt, img}]）。照 gal_json 的保底套路持久化 */
+    char *novel_json;
+
 } novel_project_t;
 
 /* ============== 项目管理 ============== */
@@ -170,6 +176,8 @@ void project_add_chapter(novel_project_t *proj, const char *title, const char *s
 void project_clear_chapters(novel_project_t *proj);
 chapter_t* project_get_chapter(novel_project_t *proj, int index);
 void project_update_chapter_content(novel_project_t *proj, int index, const char *content);
+/* SinkNow：写入章节演出脚本（DSL 文本） */
+void project_set_chapter_play_script(novel_project_t *proj, int index, const char *script);
 
 /* ============== 一致性检查 ============== */
 

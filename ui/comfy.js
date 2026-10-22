@@ -9,50 +9,23 @@
  * 约定：只发起出站 HTTP，不开放任何端口；不占 AI 忙闲位，可与剧情生成并行。
  * ============================================================ */
 
-/* 当前舞台节点的配图 key（用大纲节点 id，跳线也认得出） */
+/* 当前舞台背景键（SinkNow：剧本【@背景】的 key，舞台层记账 STAGE.bgKey）。
+   galgame 大纲节点键那套（G.outline/G.outlinePos）已随 gal.js 退役（2026-10-22）。 */
 function comfyCurKey() {
-  const out = (G.outline && G.outline.nodes) ? G.outline.nodes : [];
-  const n = out[G.outlinePos];
-  return (n && n.id) ? n.id : ('p' + (G.outlinePos + 1));
+  return (typeof STAGE !== 'undefined' && STAGE.bgKey) ? STAGE.bgKey : '';
 }
 
-/* 下一节的配图 key */
-function comfyNextKey() {
-  const out = (G.outline && G.outline.nodes) ? G.outline.nodes : [];
-  const idx = G.outlinePos + 1;
-  const n = out[idx];
-  return (n && n.id) ? n.id : ('p' + (idx + 1));
-}
-
-/* 把已生成的图铺成舞台背景。key 不是当前节点就跳过——
-   预生成完成时用户可能已经推进到别的节点，别把下一节的图提前糊上。 */
+/* 把已生成的图铺成舞台背景。key 不是舞台当前背景就跳过——
+   预生成完成时演出可能已经切到别的场景，别把别的场景的图提前糊上。
+   统一走舞台资源层 stageSetBg（stage_asset，与剧本【@背景】指令同一目录同一契约）。 */
 function comfyApplyBg(key) {
   if (!key || key !== comfyCurKey()) return;
-  send('read_image', { node: key }, 60000).then(d => {
-    if (!d || !d.data) return;
-    const st = $('galStage');
-    if (!st) return;
-    st.style.backgroundImage = 'url(' + d.data + ')';
-    st.classList.add('has-bg');
-    uiLog('[comfy] 背景已铺 ' + key);
-  }).catch(() => {});   /* 没图就算了，别打扰剧情 */
+  stageSetBg(key, '');
+  uiLog('[comfy] 背景请求 ' + key);
 }
 
-/* 预生成下一节背景：只在「自动生成背景」开着时跑。
-   失败只记日志/toast，绝不打断剧情主线。 */
-function comfyPreGen() {
-  if (!(S.cfg && S.cfg.comfyAutoBg)) return;
-  if (!S.cfg.comfyUrl || !S.cfg.comfyWorkflowPath) return;
-  const out = (G.outline && G.outline.nodes) ? G.outline.nodes : [];
-  const nxt = out[G.outlinePos + 1];
-  const key = comfyNextKey();
-  const prompt = nxt
-    ? ((nxt.title || '') + '。' + (nxt.summary || nxt.desc || nxt.beat || ''))
-    : '下一节剧情背景插画';
-  if (!prompt.replace(/[。\s]/g, '')) return;
-  fire('comfy_gen', { node: key, prompt });
-  uiLog('[comfy] 预生成背景 ' + key);
-}
+/* 预生成：SinkNow 的场景图由 novelGenScenes 在开演前按需批量发（kind=bg），
+   这里不再单独预生成（原 galgame 大纲逐节点预生成已退役）。 */
 
 /* comfy_done 事件回执（core.js 转来） */
 function comfyOnDone(d) {
@@ -67,7 +40,13 @@ function comfyOnDone(d) {
     let info = {};
     try { info = JSON.parse(d.text || '{}'); } catch (e) { info = {}; }
     uiLog('[comfy] 生成完成 ' + (info.node || '?') + ' → ' + (info.path || '?'));
-    comfyApplyBg(info.node || '');
+    /* 落盘文件名才是舞台资源键（SinkNow 用 name 落盘，node 只是 ASCII 事件键）：
+       从 path 认领 basename；kind 看目录（figures\ 下是立绘，其它是背景）。 */
+    const base = (info.path || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '') || (info.node || '');
+    const kind = /figures/i.test(info.path || '') ? 'figures' : 'bg';
+    /* 图刚落盘：作废舞台资源缓存再铺，否则 stageAsset 的「未就绪」记账会挡住新图 */
+    stageAssetInvalidate(kind, base + '.png');
+    if (kind === 'bg') comfyApplyBg(base);
     return;
   }
 }
@@ -102,12 +81,14 @@ $('comfyAutoBg').addEventListener('change', () => fire('save_config', collectCfg
 $('btnComfyGen').onclick = () => {
   /* S.proj 初值就是空对象，裸判恒真（P1）——要看有没有项目得判 hasProject */
   if (!S.proj || !S.proj.hasProject) { toast('warn', '先打开项目'); return; }
-  const out = (G.outline && G.outline.nodes) ? G.outline.nodes : [];
-  const cur = out[G.outlinePos];
-  const n = G.nodes[G.current];
-  const prompt = (cur && (cur.title || cur.summary))
-    ? ((cur.title || '') + '。' + (cur.summary || ''))
-    : ((n && n.text) ? n.text.slice(0, 200) : '剧情背景插画');
-  fire('comfy_gen', { node: comfyCurKey(), prompt });
+  /* SinkNow：手动补生成当前舞台背景（剧本没图/图不满意时的补救按钮） */
+  const key = comfyCurKey();
+  if (!key) { toast('warn', '舞台还没铺背景（先开演到有场景的段落）'); return; }
+  fire('comfy_gen', {
+    node: key.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) || 'scene',
+    name: key,
+    prompt: key,
+    kind: 'bg'
+  });
   toast('success', '已排队生成，图好自动铺上舞台背景');
 };

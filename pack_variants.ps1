@@ -1,5 +1,5 @@
-﻿# pack_variants.ps1 —— NovelNow 两版并行打包（novel 纯小说版 / SinkNow 全量版）
-# 用法：pwsh -File pack_variants.ps1 [-Version 0.2.13] [-OutDir "C:\Users\ROG\Desktop"]
+# pack_variants.ps1 —— NovelNow 两版并行打包（novel 纯小说版 / SinkNow 全量版）
+# 用法：pwsh -File pack_variants.ps1 [-Version 0.2.13] [-OutDir "C:\Users\<你>\Desktop"]
 # 约定（HANDOFF 传承）：
 #   - 旧 zip 一律不删（旧版本留档）
 #   - config.json（含 API key）/webui.log/projects/webview_data 绝不进包
@@ -8,7 +8,7 @@
 
 param(
     [string]$Version = "",
-    [string]$OutDir = "C:\Users\ROG\Desktop"
+    [string]$OutDir = "C:\Users\<你>\Desktop"
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,8 +45,10 @@ function Strip-Galnow($indexPath) {
     $html = [regex]::Replace($html, '(?s)[ \t]*<button class="nav-item" data-page="galnow">.*?</button>\r?\n?', '')
     # 剥 GalNow 注释 + 整个 galnow section（区内无嵌套 </section>，取首个即止）
     $html = [regex]::Replace($html, '(?s)[ \t]*<!-- -+ GalNow.*?</section>\r?\n?', '')
-    # 剥 gal.js / comfe.js 引用（comfy.js 全名另剥）
+    # 剥 novel.js / stage.js / comfy.js 引用（gal.js 已退役，2026-10-22 SinkNow 重构）
+    $html = [regex]::Replace($html, '(?m)^[ \t]*<script src="novel\.js"></script>\r?\n?', '')
     $html = [regex]::Replace($html, '(?m)^[ \t]*<script src="gal\.js"></script>\r?\n?', '')
+    $html = [regex]::Replace($html, '(?m)^[ \t]*<script src="stage\.js"></script>\r?\n?', '')
     $html = [regex]::Replace($html, '(?m)^[ \t]*<script src="comfy\.js"></script>\r?\n?', '')
     [IO.File]::WriteAllText($indexPath, $html, (New-Object System.Text.UTF8Encoding $false))
 }
@@ -62,7 +64,9 @@ Write-Host ("SinkNow 全量版：{0}  ({1} 字节)" -f $zipFull, (Get-Item $zipF
 # ---- novel 纯小说版 ----
 $stageNovel = Join-Path $packtemp "novelnow-win64-$Version-novel"
 Copy-BaseStage $stageNovel
-Remove-Item (Join-Path $stageNovel "ui\gal.js") -Force
+if (Test-Path (Join-Path $stageNovel "ui\novel.js")) { Remove-Item (Join-Path $stageNovel "ui\novel.js") -Force }
+if (Test-Path (Join-Path $stageNovel "ui\gal.js")) { Remove-Item (Join-Path $stageNovel "ui\gal.js") -Force }
+Remove-Item (Join-Path $stageNovel "ui\stage.js") -Force
 Remove-Item (Join-Path $stageNovel "ui\comfy.js") -Force
 Strip-Galnow (Join-Path $stageNovel "ui\index.html")
 # 金丝雀自检：novel 版 index.html 不许再有 galnow 残留

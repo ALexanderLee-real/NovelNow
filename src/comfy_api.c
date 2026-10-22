@@ -418,6 +418,12 @@ static const char *mime_of(const char *path)
     if (_stricmp(dot, "jpg") == 0 || _stricmp(dot, "jpeg") == 0) return "image/jpeg";
     if (_stricmp(dot, "webp") == 0) return "image/webp";
     if (_stricmp(dot, "gif") == 0) return "image/gif";
+    /* 舞台引擎的 BGM/音效（stage_asset 复用本管线） */
+    if (_stricmp(dot, "mp3") == 0) return "audio/mpeg";
+    if (_stricmp(dot, "ogg") == 0) return "audio/ogg";
+    if (_stricmp(dot, "wav") == 0) return "audio/wav";
+    if (_stricmp(dot, "m4a") == 0) return "audio/mp4";
+    if (_stricmp(dot, "flac") == 0) return "audio/flac";
     return "image/png";
 }
 
