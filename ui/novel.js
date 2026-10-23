@@ -66,6 +66,7 @@ async function novelImport() {
     N.chapters = chs.map((c, i) => ({ index: i, title: c.title, content: '', playScript: '' }));
     N.cur = 0;
     N.analysis = null;
+    stageClear();          /* 新小说进厂：上一部的舞台残留（背景/立绘/BGM）清台 */
     renderNovel();
     toast('success', '小说已导入（' + (d.chapters || chs.length) + ' 章）');
     setStatus('已导入：' + (d.project && d.project.name || '') + ' —— 点「AI 扒剧情+人物」继续');
@@ -320,6 +321,7 @@ async function novelRestore() {
     }
     N.cur = 0;
     N.playing = false;
+    stageClear();          /* 切项目/重开：上一个项目的舞台残留不许跨项目串戏 */
     const nv = await send('get_novel').catch(() => null);
     if (nv && nv.novel && nv.novel !== '{}') {
       try { N.analysis = JSON.parse(nv.novel); } catch (e) { N.analysis = null; }

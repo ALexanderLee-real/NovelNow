@@ -347,19 +347,20 @@ function stageStop() {
   STAGE.finishTyping = null;
 }
 
-/* 清台（换项目/重新开始） */
+/* 清台：导入新小说时清掉上一部的舞台残留（背景/立绘/黑幕/名字/BGM） */
 function stageClear() {
   stageStop();
   const bgs = $('stageBgs'); if (bgs) bgs.innerHTML = '';
   const figs = $('stageFigs');
   if (figs) figs.querySelectorAll('.stage-fig-slot').forEach(s => {
     s.innerHTML = ''; s.classList.remove('is-on', 'is-dim'); delete s.dataset.who;
+    delete s.dataset.key; delete s.dataset.standSrc; delete s.dataset.talking;
   });
   const intro = $('stageIntro');
   if (intro) { intro.hidden = true; intro.classList.remove('is-on'); intro.innerHTML = ''; }
   stageShowName('');
   const box = $('galText');
-  if (box) box.innerHTML = '<div class="gal-empty">尚未开始。写下想法，点「生成企划并开局」。</div>';
+  if (box) box.innerHTML = '<div class="gal-empty">把 TXT 小说丢进来，SinkNow 把它变成故事。</div>';
   stageHint('');
   stageSetBgm('');
   STAGE.who = '';

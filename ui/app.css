@@ -882,80 +882,14 @@ html[data-theme="light"] .overlay { background: rgba(30, 34, 60, 0.28); }
   box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 8px 24px rgba(5,8,18,.35);
 }
 .gal-stage.has-bg .gal-text { background: rgba(12,15,26,.72); }
-.gal-text .gal-para { margin: 0 0 12px; text-indent: 2em; }
 .gal-text .gal-empty {
   color: rgba(226,230,255,.55); text-align: center; padding: 60px 0; text-indent: 0;
   font-family: inherit; font-style: italic;
 }
-/* 选项按钮（選択肢ボタン）：居中竖排、悬停发光抬起 */
-.gal-choices {
-  position: relative; z-index: 1;
-  display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 2px 0 0;
-}
-.gal-choices .btn.gal-choice {
-  width: min(620px, 100%); margin: 0 auto; flex: none;
-  text-align: center; white-space: normal; line-height: 1.6; padding: 12px 20px;
-  font-size: 15px; letter-spacing: .04em; color: #eef0ff; cursor: pointer;
-  background: linear-gradient(180deg, rgba(38,44,72,.82), rgba(26,31,54,.88));
-  border: 1px solid rgba(150,165,255,.32); border-radius: 12px;
-  box-shadow: 0 6px 18px rgba(8,10,22,.35);
-  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease;
-}
-.gal-choices .btn.gal-choice:hover {
-  transform: translateY(-2px);
-  border-color: rgba(178,190,255,.7);
-  background: linear-gradient(180deg, rgba(56,64,104,.9), rgba(38,45,80,.92));
-  box-shadow: 0 10px 26px rgba(90,110,255,.32);
-}
-.gal-choices .btn.gal-choice:active { transform: translateY(0); }
-.gal-flags { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.gal-flag {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 8px 10px; border-radius: 8px; background: var(--surface-hi, rgba(128,128,128,.12));
-  font-size: 12px;
-}
-.gal-flag { border-left: 3px solid var(--accent); border-radius: 4px 10px 10px 4px; }
-.gal-flag:nth-child(1) { border-left-color: #f472a6; } /* 好感 · 玫瑰 */
-.gal-flag:nth-child(2) { border-left-color: #6aa9ff; } /* 信任 · 蓝 */
-.gal-flag:nth-child(3) { border-left-color: #58c98b; } /* 理智 · 绿 */
-.gal-flag:nth-child(4) { border-left-color: #f2c14e; } /* 真相碎片 · 金 */
-.gal-flag b { font-size: 15px; color: var(--accent); font-variant-numeric: tabular-nums; }
-.gal-bools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.gal-chip {
-  display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
-  background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(124,140,255,.3);
-}
 .gal-tree { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
-.gal-node {
-  display: flex; justify-content: space-between; align-items: center; gap: 8px;
-  padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 12px;
-  border: 1px solid transparent;
-}
-.gal-node:hover { background: var(--surface-hi, rgba(128,128,128,.12)); }
-.gal-node.is-cur { border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-soft); }
-.gal-node b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 
 /* ===== SinkNow 对话演出引擎 ===== */
-.gal-line {
-  line-height: 2.05;
-  white-space: pre-wrap;
-  min-height: 88px;
-}
-.gal-hint {
-  margin-top: 12px;
-  text-align: right;
-  font-size: 12px;
-  letter-spacing: .12em;
-  color: rgba(160, 175, 255, .62);
-  cursor: pointer;
-  user-select: none;
-  animation: galHintPulse 1.6s ease-in-out infinite;
-}
-.gal-caret {
-  color: rgba(124, 140, 255, .9);
-  animation: galBlink 1s steps(2) infinite;
-}
 .gal-typing {
   color: rgba(200, 210, 255, .75);
   letter-spacing: .18em;
@@ -963,11 +897,6 @@ html[data-theme="light"] .overlay { background: rgba(30, 34, 60, 0.28); }
   padding: 24px 0;
   text-align: center;
 }
-.gal-text.is-narration .gal-line {
-  font-style: italic;
-  color: rgba(200, 210, 255, .82);
-}
-@keyframes galBlink { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
 @keyframes galHintPulse { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
 
 /* ===== 舞台演出层（形似 WebGAL：背景 crossfade + 立绘三槽 + 对话框覆盖 + 黑幕） ===== */
