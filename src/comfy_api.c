@@ -316,7 +316,8 @@ int comfy_generate(const char *base_url, const char *workflow_json,
     if (chttp_do("POST", url, body, strlen(body), 60, &resp, err, errlen) != 0) goto done;
     resp_text = (char *)resp.data;
     root = cJSON_Parse(resp_text ? resp_text : "");
-    if (!root) { snprintf(err, errlen, "ComfyUI 返回的不是 JSON"); goto done; }
+    if (!root) { snprintf(err, errlen, "ComfyUI 返回的不是 JSON（len=%u 前 64 字节：%s）",
+                          (unsigned)resp.len, resp_text ? resp_text : "(空)"); goto done; }
     item = cJSON_GetObjectItemCaseSensitive(root, "error");
     if (item && !cJSON_IsNull(item)) {
         char *e = cJSON_PrintUnformatted(item);
@@ -342,7 +343,9 @@ int comfy_generate(const char *base_url, const char *workflow_json,
         if (chttp_do("GET", url, NULL, 0, 30, &resp, err, errlen) != 0) goto done;
         resp_text = (char *)resp.data;
         root = cJSON_Parse(resp_text ? resp_text : "");
-        if (!root) { snprintf(err, errlen, "轮询返回的不是 JSON"); goto done; }
+        /* 报错带证据：len + 前 64 字节，别再让「不是 JSON」无头公案（E2E 实测排查痛点） */
+        if (!root) { snprintf(err, errlen, "轮询返回的不是 JSON（len=%u 前 64 字节：%s）",
+                              (unsigned)resp.len, resp_text ? resp_text : "(空)"); goto done; }
         entry = cJSON_GetObjectItemCaseSensitive(root, prompt_id);
         if (!entry || cJSON_IsNull(entry)) { cJSON_Delete(root); root = NULL; continue; }
         status_obj = cJSON_GetObjectItemCaseSensitive(entry, "status");

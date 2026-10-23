@@ -1483,9 +1483,14 @@ static void h_import_novel(cJSON *root, const char *cmd, int id)
                         memcpy(body, chap_start, blen);
                         body[blen] = '\0';
                         {
-                            size_t hlen = (size_t)(line_end - head);
-                            if (hlen > sizeof(hbuf) - 1) hlen = sizeof(hbuf) - 1;
-                            memcpy(hbuf, head, hlen);
+                            /* 标题只取标题行到第一个 \n——曾误写 line_end - head，
+                               line_end 是「新」章标题行的尾、head 是「上一」章标题
+                               的头，标题里混进整章正文还劈半个汉字（E2E 实测） */
+                            size_t hlen = head ? (size_t)(strchr(head, '\n') ? strchr(head, '\n') - head : strlen(head)) : 0;
+                            if (head && hlen && head[hlen - 1] == '\r') hlen--;
+                            if (hlen > sizeof(hbuf) - 1) hlen = utf8_safe_len(head, sizeof(hbuf) - 1);
+                            if (head && hlen) memcpy(hbuf, head, hlen);
+                            else { memcpy(hbuf, "正文", 4); hlen = 4; }
                             hbuf[hlen] = '\0';
                         }
                         project_add_chapter(g.project, hbuf, "");
@@ -1517,7 +1522,7 @@ static void h_import_novel(cJSON *root, const char *cmd, int id)
                 {
                     size_t hlen = head ? (size_t)(strchr(head, '\n') ? strchr(head, '\n') - head : strlen(head)) : 0;
                     if (head && hlen && head[hlen - 1] == '\r') hlen--;
-                    if (hlen > sizeof(hbuf) - 1) hlen = sizeof(hbuf) - 1;
+                    if (hlen > sizeof(hbuf) - 1) hlen = utf8_safe_len(head, sizeof(hbuf) - 1);   /* 截断也别劈半个汉字 */
                     if (head && hlen) memcpy(hbuf, head, hlen);
                     else { memcpy(hbuf, "正文", 4); hlen = 4; }
                     hbuf[hlen] = '\0';

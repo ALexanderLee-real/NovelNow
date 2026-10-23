@@ -51,7 +51,9 @@ function novelAiCancel() {
 /* ---- 第一步：丢 TXT 进来（C 侧切章建档） ---- */
 async function novelImport() {
   let picked;
-  try { picked = await send('pick_text_file'); }
+  /* 文件对话框是模态的、等人点的：默认 30s 超时会把还在挑文件的用户判死
+     （实测 32s 回来发现回执被丢、静默断链）——与 actions.js/comfy.js 同规给 600s */
+  try { picked = await send('pick_text_file', {}, 600000); }
   catch (e) { toast('warn', '取消选择文件'); return; }
   const path = picked && picked.path;
   if (!path) return;
@@ -146,8 +148,11 @@ function parseLooseJson(text) {
 /* ---- 第三步：人物立绘生成（ComfyUI；没配置就跳过，舞台有剪影兜底） ---- */
 async function novelGenFigures() {
   if (!N.analysis || !N.analysis.chars.length) { toast('warn', '先「AI 扒剧情+人物」'); return; }
+  /* ComfyUI 要配齐地址+工作流才算真能出图；缺一样就整步跳过（舞台剪影兜底），
+     别对着空工作流发请求吃一排「请先选择工作流文件」（P1） */
   const url = (S.cfg && S.cfg.comfyUrl) || '';
-  if (!url) { toast('warn', '未配置 ComfyUI 地址（配图工坊页），立绘跳过（舞台用剪影）'); return; }
+  const wf = (S.cfg && S.cfg.comfyWorkflowPath) || '';
+  if (!url || !wf) { toast('warn', 'ComfyUI 未配齐（地址/工作流，配图工坊页），立绘跳过（舞台用剪影）'); return; }
   let n = 0;
   for (const c of N.analysis.chars) {
     try {
@@ -214,8 +219,10 @@ async function novelExtract(idx, silent) {
 
 /* ---- 场景按需生成：剧本里的【@背景】键没图就发 comfy_gen（kind=bg） ---- */
 function novelGenScenes(script) {
+  /* 同 novelGenFigures：地址+工作流齐了才发；缺配舞台渐变占位照样演 */
   const url = (S.cfg && S.cfg.comfyUrl) || '';
-  if (!url) return;   /* 没配 ComfyUI：舞台渐变占位照样演 */
+  const wf = (S.cfg && S.cfg.comfyWorkflowPath) || '';
+  if (!url || !wf) return;
   const seen = {};
   (script || []).forEach(ins => {
     if (ins.t !== 'bg' || !ins.key || seen[ins.key]) return;
@@ -279,9 +286,13 @@ function novelStop() {
 /* ---- 恢复（切项目/握手后） ---- */
 async function novelRestore() {
   try {
-    /* 章节列表从 renderAll 已存的 S.proj.chapters 拿（get_project 回执本体） */
-    if (S.proj && S.proj.chapters) {
-      N.chapters = S.proj.chapters.map((c, i) => ({
+    /* 章节列表自己拉快照，别等 S.proj 投喂：load_project 的 task_done 先到，
+       refreshProject 的 get_project 回包后到——novelRestore 跑在中间就是吃冷饭，
+       重启后 SinkNow 章节为 0、开演拒绝干活的真凶（E2E 实测抓到） */
+    const p = await send('get_project').catch(() => null);
+    const proj = (p && p.chapters) ? p : S.proj;
+    if (proj && proj.chapters) {
+      N.chapters = proj.chapters.map((c, i) => ({
         index: i, title: c.title, content: '', playScript: ''
       }));
     } else {
@@ -308,6 +319,9 @@ function renderNovel() {
       esc(c.title || ('第 ' + (i + 1) + ' 章')) + '</div>').join('') ||
       '<div class="muted">尚未导入小说</div>';
   }
+  /* 章节数牌：以前是写死的「0 章」占位（全库没人更新它，E2E 差点被它骗了） */
+  const ph = $('novelPhase2');
+  if (ph) ph.textContent = N.chapters.length + ' 章';
   const info = $('novelInfo');
   if (info) {
     const a = N.analysis;

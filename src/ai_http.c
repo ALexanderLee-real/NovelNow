@@ -54,8 +54,11 @@ static int parse_url(const char *url, url_parts_t *parts)
             const char *pv = port_start + 1;
             /* 失败必须 return -1（parse_url 约定 0=成功）：早前这里 return 0
                把非法端口当解析成功（P1-⑮ 的修复没修好） */
-            if (!*pv) return -1;
-            for (const char *d = pv; *d; d++) if (*d < '0' || *d > '9') return -1;
+            if (!*pv || *pv == '/') return -1;
+            /* 数字校验只看端口段本身，到 '/'（路径开始）或串尾为止——
+               扫到串尾会把路径也算进端口（"8399/v1/chat/..." 一个 '/' 就 return -1），
+               害得「带端口+路径」的 URL 全军覆没（E2E mock 实测抓到的回归） */
+            for (const char *d = pv; *d && *d != '/'; d++) if (*d < '0' || *d > '9') return -1;
             if (parts->port < 1 || parts->port > 65535) return -1;
         }
     } else {
