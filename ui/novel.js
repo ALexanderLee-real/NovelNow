@@ -80,8 +80,8 @@ async function novelImport() {
 /* ---- 第二步：AI 总结剧情 + 人物定妆（形象描述它自己写） ---- */
 const NOVEL_SYS_ANALYZE =
   '你是小说改编导演。用户给你一篇小说的开头，你要输出严格 JSON（不要任何多余文字、不要 markdown 代码块）：\n' +
-  '{"summary":"全书剧情走向概括（200字内）","chars":[{"name":"人物名","look":"外貌定妆描述（发型/服装/气质，50字内）","pose":"stand|talk","prompt":"适合画成全身立绘的英文绘画提示词（含发型服装气质表情站姿，纯色背景）"}]}\n' +
-  '规则：出场且有台词的人物全列，最多 8 个；pose 有台词的用 talk（生动说话姿态），只被提到/动作少的用 stand（自然站立）；prompt 尽量具体统一（同一人物多章形象要固定）。';
+  '{"summary":"全书剧情走向概括（200字内）","chars":[{"name":"人物名","look":"外貌定妆描述（发型/服装/气质，50字内）","pose":"stand|talk","prompt":"适合画成全身立绘的英文绘画提示词（发型/服装/气质/表情，纯色背景；只写形象定妆，不要写动作姿态）"}]}\n' +
+  '规则：出场且有台词的人物全列，最多 8 个；pose 有台词的用 talk（会生成站立+说话两态立绘），只被提到/动作少的用 stand（只生成站立图）；prompt 尽量具体统一（同一人物多章形象要固定）。';
 
 async function novelAnalyze() {
   if (!N.chapters.length) { toast('warn', '先导入小说'); return; }
@@ -155,15 +155,28 @@ async function novelGenFigures() {
   if (!url || !wf) { toast('warn', 'ComfyUI 未配齐（地址/工作流，配图工坊页），立绘跳过（舞台用剪影）'); return; }
   let n = 0;
   for (const c of N.analysis.chars) {
+    /* 站立图全员都有：<name>.png。姿态后缀拼在定妆 prompt 后面（形象由 prompt 锁定，两态只差动作） */
     try {
       await send('comfy_gen', {
         node: 'fig_' + (n + 1),
         name: c.name,
         kind: 'figures',
-        prompt: c.prompt || c.look
+        prompt: ((c.prompt || c.look || '') + ', standing naturally, full body, relaxed, neutral expression').trim()
       });
       n++;
     } catch (e) { uiLog('[novel] 立绘请求失败 ' + c.name + '：' + e.message); }
+    /* 说话两态：有台词的人补一张 <name>_talk.png，舞台在他开口时自动换上（stageHighlight 联动） */
+    if (c.pose === 'talk') {
+      try {
+        await send('comfy_gen', {
+          node: 'fig_' + (n + 1),
+          name: c.name + '_talk',
+          kind: 'figures',
+          prompt: ((c.prompt || c.look || '') + ', talking, mouth open, expressive gesture, looking at viewer').trim()
+        });
+        n++;
+      } catch (e) { uiLog('[novel] 说话图请求失败 ' + c.name + '：' + e.message); }
+    }
   }
   toast('success', '已发 ' + n + ' 个立绘生成请求（后台出图，出来自动上舞台）');
 }
@@ -227,13 +240,20 @@ function novelGenScenes(script) {
   (script || []).forEach(ins => {
     if (ins.t !== 'bg' || !ins.key || seen[ins.key]) return;
     seen[ins.key] = 1;
-    /* node=ASCII 事件键（comfy_done 对账）；name=落盘文件名（须与舞台 stageAsset('bg', key+'.png') 对得上） */
-    send('comfy_gen', {
-      node: ins.key.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) || 'scene',
-      name: ins.key,
-      prompt: ins.desc || ins.key,
-      kind: 'bg'
-    }).catch(e => uiLog('[novel] 场景图请求失败 ' + ins.key + '：' + (e.message || e)));
+    const fname = ins.key + '.png';
+    /* 没图才发：图在盘上就别重画（真 ComfyUI 一张几十秒，回放一遍全重画太奢侈）。
+       探测前先作废缓存，防「首次探测没图」的空缓存毒化后来的判定。 */
+    stageAssetInvalidate('bg', fname);
+    stageAsset('bg', fname).then(got => {
+      if (got) { uiLog('[novel] 场景图已有，跳过生成 ' + ins.key); return; }
+      /* node=ASCII 事件键（comfy_done 对账）；name=落盘文件名（须与舞台 stageAsset('bg', key+'.png') 对得上） */
+      send('comfy_gen', {
+        node: ins.key.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) || 'scene',
+        name: ins.key,
+        prompt: ins.desc || ins.key,
+        kind: 'bg'
+      }).catch(e => uiLog('[novel] 场景图请求失败 ' + ins.key + '：' + (e.message || e)));
+    });
   });
 }
 

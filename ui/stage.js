@@ -21,6 +21,7 @@ const STAGE = {
   auto: false, autoTimer: null,
   assets: {},          /* 'kind:name' -> data URL | null（null=确认未就绪） */
   bgSeq: 0,            /* 背景指令序号：异步回包按序判废 */
+  speakSeq: 0,         /* 换装指令序号：说话图异步回包防插队 */
   bgTop: null,         /* crossfade 用：当前最上层 bg layer */
   bgKey: '',           /* 当前背景资源键（comfyApplyBg 对账用） */
   who: '', audio: null, bgmKey: ''
@@ -122,16 +123,40 @@ function stageSetFigure(who, pos, key, on) {
     }
     slot.appendChild(holder);
     slot.dataset.who = name;
+    /* 说话两态换装记账：key=图名（说话图找 <key>_talk.png），standSrc=站立图回程票 */
+    slot.dataset.key = key || name;
+    delete slot.dataset.talking;
+    if (url) slot.dataset.standSrc = url; else delete slot.dataset.standSrc;
     requestAnimationFrame(() => slot.classList.add('is-on'));
     uiLog('[stage] fig ' + name + ' @' + pos + (url ? '' : '（占位）'));
   });
 }
 
-/* 说话人高亮：当前说话人的槽位亮，其他压暗 */
+/* 说话人高亮 + 两态换装：当前说话人的槽位亮、换「说话图」（<key>_talk.png），
+   其他压暗、回「站立图」。没说话图就保持站图（静默降级，红线不打断演出）。 */
 function stageHighlight(who) {
   STAGE.who = who || '';
+  const seq = ++STAGE.speakSeq;
   document.querySelectorAll('#stageFigs .stage-fig-slot').forEach(s => {
     s.classList.toggle('is-dim', !!(who && s.dataset.who && s.dataset.who !== who));
+    const img = s.querySelector('img');
+    const key = s.dataset.key || s.dataset.who || '';
+    if (!img || !key) return;   /* 剪影占位没图可换 */
+    if (who && s.dataset.who === who) {
+      stageAsset('figures', key + '_talk.png').then(url => {
+        /* 迟到的换装不许插队：序号过期/人已换岗就作废 */
+        if (seq !== STAGE.speakSeq || s.dataset.who !== who) return;
+        if (url) {
+          if (!s.dataset.standSrc) s.dataset.standSrc = img.src;
+          img.src = url;
+          s.dataset.talking = '1';
+          uiLog('[stage] speak ' + who + ' → ' + key + '_talk');
+        }
+      });
+    } else if (s.dataset.talking) {
+      delete s.dataset.talking;
+      img.src = s.dataset.standSrc || img.src;
+    }
   });
 }
 
