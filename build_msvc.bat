@@ -80,7 +80,10 @@ if errorlevel 1 (
 
 echo [4/4] copying assets...
 copy /y third_party\webview2\x64\WebView2Loader.dll bin\ >nul
-xcopy /y /q ui\* bin\ui\ >nul
+rem wipe bin\ui first: xcopy never deletes, so retired files (e.g. gal.js) leak into release zips
+if exist bin\ui rmdir /s /q bin\ui
+mkdir bin\ui
+xcopy /y /q /e ui\* bin\ui\ >nul
 
 echo.
 echo ==========================================

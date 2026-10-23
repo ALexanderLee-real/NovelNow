@@ -61,6 +61,7 @@ desktop.ini
 # ============================================================
 bin/
 _packtemp/
+_packsmoke/
 HANDOFF.md
 接手计划书.md
 PROGRESS.md
