@@ -42,14 +42,15 @@ static void ai_throttle_wait(const ai_config_t *cfg)
 }
 
 /* 判断错误是否值得重试：限流(429)、服务端 5xx、连接类失败。
-   401/400 这类重试也不会好，不浪费次数。 */
-static int retryable_error(const char *err)
+   401/400 这类重试也不会好，不浪费次数。
+   http_code>0 时按状态码直判（可靠），文案匹配只做兜底（连接错误没码、
+   或错误在 JSON 正文里时）。 */
+static int retryable_error(const char *err, int http_code)
 {
+    if (err && strstr(err, "用户取消")) return 0;   /* 中止请求绝不重试 */
+    if (http_code == 429 || (http_code >= 500 && http_code < 600)) return 1;
+    if (http_code >= 400 && http_code < 500) return 0;  /* 其余 4xx 重试无益 */
     if (!err) return 0;
-    if (strstr(err, "用户取消")) return 0;   /* 中止请求绝不重试 */
-    if (strstr(err, "HTTP 429")) return 1;
-    if (strstr(err, "HTTP 500") || strstr(err, "HTTP 502") ||
-        strstr(err, "HTTP 503") || strstr(err, "HTTP 504")) return 1;
     if (strstr(err, "Connection lost")) return 1;
     if (strstr(err, "Request failed")) return 1;
     if (strstr(err, "rate limit") || strstr(err, "Rate limit") ||
@@ -363,12 +364,13 @@ ai_response_t* ai_chat(ai_config_t *cfg, chat_message_t *messages, int msg_count
     int retry;
     for (int attempt = 0; ; attempt++) {
         char *response_body;
+        int http_code = 0;
         retry = 0;
         ai_throttle_wait(cfg);
         response_body = http_request("POST", endpoint, headers, 2, json_str, strlen(json_str),
-                                     cfg->timeout, &http_err);
+                                     cfg->timeout, &http_err, &http_code);
         if (!response_body) {
-            if (http_err && retryable_error(http_err) && attempt + 1 < attempts) {
+            if (http_err && retryable_error(http_err, http_code) && attempt + 1 < attempts) {
                 free(http_err); http_err = NULL;
                 retry = 1;
             } else {
@@ -448,7 +450,7 @@ ai_response_t* ai_chat(ai_config_t *cfg, chat_message_t *messages, int msg_count
 
         /* JSON 层报的错也过一遍重试判定（如正文里的 rate limit 文案） */
         if (!retry && !resp->success && resp->error &&
-            attempt + 1 < attempts && retryable_error(resp->error)) {
+            attempt + 1 < attempts && retryable_error(resp->error, http_code)) {
             free(resp->error); resp->error = NULL;
             retry = 1;
         }
@@ -554,6 +556,7 @@ ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int ms
     const char *final_err = NULL;
     int retry;
     for (int attempt = 0; ; attempt++) {
+        int http_code = 0;
         retry = 0;
         sse.cb = cb; sse.ud = user;
         http_buf_init(&sse.pend);
@@ -562,11 +565,11 @@ ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int ms
         ai_throttle_wait(cfg);
         free(http_err); http_err = NULL;
         response_body = http_request_ex("POST", endpoint, headers, 3, json_str, strlen(json_str),
-                                        cfg->timeout, &http_err, sse_on_chunk, &sse);
+                                        cfg->timeout, &http_err, sse_on_chunk, &sse, &http_code);
         final_err = sse.error ? sse.error : (http_err ? http_err : NULL);
 
         if (!response_body) {
-            int retriable = final_err && retryable_error(final_err);
+            int retriable = final_err && retryable_error(final_err, http_code);
             int had_output = sse.content.length > 0;
             if (retriable && !had_output && attempt + 1 < attempts) {
                 sse_reset(&sse);
@@ -596,7 +599,7 @@ ai_response_t* ai_chat_stream(ai_config_t *cfg, chat_message_t *messages, int ms
         }
 
         if (!retry && !resp->success && resp->error &&
-            attempt + 1 < attempts && retryable_error(resp->error) &&
+            attempt + 1 < attempts && retryable_error(resp->error, http_code) &&
             sse.content.length == 0) {
             free(resp->error); resp->error = NULL;
             sse_reset(&sse);
@@ -688,7 +691,7 @@ char** ai_list_models(ai_config_t *cfg, int *count)
     }
     headers[0] = auth_header;
 
-    body = http_request("GET", models_url, headers, 1, NULL, 0, cfg->timeout, NULL);
+    body = http_request("GET", models_url, headers, 1, NULL, 0, cfg->timeout, NULL, NULL);
     free(models_url);
     if (!body) return NULL;
 

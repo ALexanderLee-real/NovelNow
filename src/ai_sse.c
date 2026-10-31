@@ -50,8 +50,23 @@ void sse_on_chunk(const char *data, size_t len, void *ud)
                     cJSON *err = cJSON_GetObjectItem(j, "error");
                     if (err) {
                         cJSON *msg = cJSON_GetObjectItem(err, "message");
-                        if (msg && cJSON_IsString(msg) && !s->error)
-                            s->error = str_dup(msg->valuestring);
+                        if (msg && cJSON_IsString(msg) && msg->valuestring) {
+                            if (!s->error) {
+                                s->error = str_dup(msg->valuestring);
+                            } else {
+                                /* 多条 error 不再只留第一条：首条=根因保住首位，
+                                   后续追加（换行分隔），排查时全貌可见（P1） */
+                                size_t alen = strlen(s->error), blen = strlen(msg->valuestring);
+                                char *joined = (char *)malloc(alen + blen + 2);
+                                if (joined) {
+                                    memcpy(joined, s->error, alen);
+                                    joined[alen] = '\n';
+                                    memcpy(joined + alen + 1, msg->valuestring, blen + 1);
+                                    free(s->error);
+                                    s->error = joined;
+                                }
+                            }
+                        }
                     }
                     /* 支线 C：usage（OpenAI 兼容响应体里的 usage 对象；流式下
                        DeepSeek 在 [DONE] 前最后一条带，choices 可能是空数组） */

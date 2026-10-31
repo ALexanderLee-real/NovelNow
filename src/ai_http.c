@@ -126,9 +126,11 @@ void http_buf_free(http_buffer_t *buf)
 char* http_request_ex(const char *method, const char *url, const char *headers[],
                              int header_count, const char *body, size_t body_len,
                              int timeout_sec, char **err_out,
-                             void (*on_body)(const char *data, size_t len, void *ud), void *ud)
+                             void (*on_body)(const char *data, size_t len, void *ud), void *ud,
+                             int *http_code)
 {
     url_parts_t parts;
+    if (http_code) *http_code = 0;
     if (parse_url(url, &parts) != 0) {
         if (err_out) *err_out = str_dup("Failed to parse URL");
         return NULL;
@@ -203,6 +205,7 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
         snprintf(status_code, sizeof(status_code), "0");
     }
     int code = atoi(status_code);
+    if (http_code) *http_code = code;   /* 状态码出参：重试判定按码说话，不再靠文案（P1） */
     int ok_status = (code >= 200 && code < 300);
 
     /* Read response */
@@ -278,10 +281,10 @@ char* http_request_ex(const char *method, const char *url, const char *headers[]
 /* 非流式调用方（ai_chat / ai_list_models）的原接口保持不变 */
 char* http_request(const char *method, const char *url, const char *headers[],
                           int header_count, const char *body, size_t body_len,
-                          int timeout_sec, char **err_out)
+                          int timeout_sec, char **err_out, int *http_code)
 {
     return http_request_ex(method, url, headers, header_count, body, body_len,
-                           timeout_sec, err_out, NULL, NULL);
+                           timeout_sec, err_out, NULL, NULL, http_code);
 }
 
 /* ============== 聊天 API ============== */

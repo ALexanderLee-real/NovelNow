@@ -14,6 +14,7 @@ const N = {
   awaiting: null,    /* 'analyze' | 'extract' —— aiCall 结果路由 */
   cb: null,          /* aiCall 单槽 */
   playing: false,
+  figured: false,    /* 立绘请求发过没有（下一步引导用） */
   auto: false        /* 自动连播（一章演完自动下一章） */
 };
 
@@ -68,6 +69,7 @@ async function novelImport() {
     N.analysis = null;
     stageClear();          /* 新小说进厂：上一部的舞台残留（背景/立绘/BGM）清台 */
     renderNovel();
+    N.figured = false;
     toast('success', '小说已导入（' + (d.chapters || chs.length) + ' 章）');
     setStatus('已导入：' + (d.project && d.project.name || '') + ' —— 点「AI 扒剧情+人物」继续');
   } catch (e) {
@@ -121,6 +123,7 @@ async function novelAnalyze() {
     };
     await send('set_novel', { json: JSON.stringify(N.analysis) }).catch(() => {});
     renderNovel();
+    N.figured = false;
     toast('success', '剧情与人物扒好（' + N.analysis.chars.length + ' 人）');
     setStatus('人物定妆完成 —— 点「生成人物立绘」或「扒演出并开演」');
   } catch (e) {
@@ -179,6 +182,7 @@ async function novelGenFigures() {
       } catch (e) { uiLog('[novel] 说话图请求失败 ' + c.name + '：' + e.message); }
     }
   }
+  N.figured = true;
   toast('success', '已发 ' + n + ' 个立绘生成请求（后台出图，出来自动上舞台）');
 }
 
@@ -321,6 +325,7 @@ async function novelRestore() {
     }
     N.cur = 0;
     N.playing = false;
+    N.figured = false;   /* 项目切换后立绘状态归零，引导牌重新指路 */
     stageClear();          /* 切项目/重开：上一个项目的舞台残留不许跨项目串戏 */
     const nv = await send('get_novel').catch(() => null);
     if (nv && nv.novel && nv.novel !== '{}') {
@@ -344,6 +349,22 @@ function renderNovel() {
   /* 章节数牌：以前是写死的「0 章」占位（全库没人更新它，E2E 差点被它骗了） */
   const ph = $('novelPhase2');
   if (ph) ph.textContent = N.chapters.length + ' 章';
+  /* 下一步引导（用户反馈：导入完不知道点什么——别再拿一闪而过的 toast 当说明书）：
+     novelPhase 提示牌常驻显示下一步点哪个按钮，同时把该按钮点亮 */
+  const wantBtn = !N.chapters.length ? 'novelBtnImport'
+    : (!N.analysis ? 'novelBtnAnalyze'
+    : (!N.figured ? 'novelBtnFigures' : 'novelBtnPlay'));
+  const stepEl = $('novelPhase');
+  if (stepEl) stepEl.textContent = {
+    'novelBtnImport': '第 1 步：点「丢小说进来（TXT）」导入小说',
+    'novelBtnAnalyze': '第 2 步：点「AI 扒剧情+人物」扒剧情梗概和人物定妆',
+    'novelBtnFigures': '第 3 步：点「生成人物立绘」（可跳过，舞台先用剪影）',
+    'novelBtnPlay': '点「开演」看故事（上一章/下一章换章）'
+  }[wantBtn];
+  ['novelBtnImport', 'novelBtnAnalyze', 'novelBtnFigures', 'novelBtnPlay'].forEach(id => {
+    const b = $(id);
+    if (b) b.classList.toggle('is-next', id === wantBtn);
+  });
   const info = $('novelInfo');
   if (info) {
     const a = N.analysis;

@@ -53,10 +53,11 @@ void http_buf_free(http_buffer_t *buf);
 char* http_request_ex(const char *method, const char *url, const char *headers[],
                      int header_count, const char *body, size_t body_len,
                      int timeout_sec, char **err_out,
-                     void (*on_body)(const char *data, size_t len, void *ud), void *ud);
+                     void (*on_body)(const char *data, size_t len, void *ud), void *ud,
+                     int *http_code);
 char* http_request(const char *method, const char *url, const char *headers[],
                   int header_count, const char *body, size_t body_len,
-                  int timeout_sec, char **err_out);
+                  int timeout_sec, char **err_out, int *http_code);
 char* resolve_chat_endpoint(const char *api_url);
 
 /* ---- ai_sse.c ---- */

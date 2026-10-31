@@ -1068,3 +1068,29 @@ html[data-theme="light"] .overlay { background: rgba(30, 34, 60, 0.28); }
   background: linear-gradient(135deg, rgba(124,140,255,.9), rgba(158,120,255,.85));
   box-shadow: 0 6px 18px rgba(124,140,255,.35);
 }
+
+/* ---- 制作流程引导（用户反馈「导入完不知道点什么」）：步骤徽章 + 下一步高亮 ---- */
+.step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px; height: 18px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: rgba(124,140,255,.35);
+  border: 1px solid rgba(178,190,255,.5);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  color: #dfe4ff;
+  vertical-align: 1px;
+}
+.btn.is-next {
+  outline: 2px solid rgba(178,190,255,.85);
+  outline-offset: 2px;
+  animation: nextGlow 1.6s ease-in-out infinite;
+}
+@keyframes nextGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124,140,255,.0); }
+  50% { box-shadow: 0 0 14px 3px rgba(124,140,255,.55); }
+}
