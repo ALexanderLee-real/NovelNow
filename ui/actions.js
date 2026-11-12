@@ -234,9 +234,6 @@ function collectCfg() {
     rateLimitMs: Math.max(0, parseInt($('rateLimitMs').value, 10) || 0),
     maxRetries: Math.max(0, parseInt($('maxRetries').value, 10) || 0),
     enableConsistencyCheck: $('consistency').checked,
-    comfyUrl: $('comfyUrl') ? $('comfyUrl').value.trim() : (S.cfg.comfyUrl || ''),
-    comfyWorkflowPath: $('comfyWfPath') ? $('comfyWfPath').value.trim() : (S.cfg.comfyWorkflowPath || ''),
-    comfyAutoBg: $('comfyAutoBg') ? $('comfyAutoBg').checked : !!S.cfg.comfyAutoBg,
     projectsDir: projDir,
     exportDir: expDir
   };
@@ -305,6 +302,22 @@ function loadProject(params, force) {
       return;
     }
     toast('info', '正在加载项目…');
+  }).catch(e => toast('error', e.message));
+}
+
+/* 导入 TXT 小说（切章建档）。C 侧 import_novel 是同步纯文件 IO + 切章，
+   脏项目同样回 needConfirm，确认后带 force 重发。 */
+function importNovel(path, force) {
+  send('import_novel', { path, force: force ? 1 : 0 }).then(d => {
+    if (d && d.needConfirm) {
+      confirmDiscard('当前项目「' + esc(d.projectName || '未命名') +
+        '」有还没保存的改动。导入小说会丢弃这些改动，是否先保存？',
+        () => importNovel(path, true));
+      return;
+    }
+    refreshProject(true);
+    goPage('outline');
+    toast('success', '小说已导入');
   }).catch(e => toast('error', e.message));
 }
 
@@ -422,16 +435,16 @@ $('moreMenu').addEventListener('click', e => {
       if (d.path) fire('import_txt', { path: d.path });
     }).catch(() => {});
   }
+  else if (act === 'importNovel') {
+    send('pick_text_file', {}, 600000).then(d => {
+      if (d.path) importNovel(d.path);
+    }).catch(() => {});
+  }
 });
 
 /* ---- 状态栏 ---- */
 $('btnCancel').onclick = () => {
   fire('cancel', {});
-  /* 同步收掉在飞的 novelAiCall：取消后 task_done 的 cmd 不一定是 ai_call，
-     不手动 reject 就永久悬挂（typeof N：纯小说版无 novel.js） */
-  if (typeof N !== 'undefined') {
-    if (typeof novelAiCancel === 'function') novelAiCancel();
-  }
   $('btnCancel').disabled = true;
 };
 
@@ -466,9 +479,9 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     if (S.proj.hasProject) $('btnSaveProj').click();
   }
-  if (e.ctrlKey && e.key >= '1' && e.key <= '5') {
+  if (e.ctrlKey && e.key >= '1' && e.key <= '4') {
     e.preventDefault();
-    goPage(['idea', 'plan', 'outline', 'galnow', 'settings'][+e.key - 1]);
+    goPage(['idea', 'plan', 'outline', 'settings'][+e.key - 1]);
   }
 });
 
@@ -529,7 +542,6 @@ if (bridge) {
       /* 握手自检：hello 走的是 JS -> C，这里补一次 ping 证明 C -> JS 也通。
          C 侧收到 ping 会打一条「闭环确认」日志，排查白屏时先看它。 */
       send('ping', {}).catch(() => {});
-      if (typeof novelRestore === 'function') novelRestore();   /* 恢复 SinkNow 状态（项目里存过才有） */
       if (!S.cfg.apiKey) {
         toast('info', '还没有配置 API Key，去「设置」页填一下就能用了');
       }

@@ -65,17 +65,13 @@ void sse_reset(sse_ctx_t *s);
 void sse_on_chunk(const char *data, size_t len, void *ud);
 
 /* ---- ai_api.c (abort channel, read by request code) ----
-   取消通道上下文化（2026-10-19）：两个独立通道——g_abort_ai（AI 文本请求）
-   与 g_abort_comfy（ComfyUI 图片请求）。产品语义「并行互不打断」（见
-   comfy_api.c 头注释）由通道隔离保证：取消 AI 不掐 comfy、取消 comfy 不掐
-   AI；关窗走 ai_abort_all() 两条都掐。
+   取消通道上下文化（2026-10-19）：g_abort_ai（AI 文本请求）。
    在途请求登记成链表节点，节点自带「取消线程已代关」标记——句柄值可能被
    新请求复用，靠全局记句柄值会误杀他人连接（单槽 g_active_req/g_aborted_req
    时代的教训，已废除）。 */
 typedef struct abort_ctx abort_ctx_t;
 typedef struct ai_req_node ai_req_node_t;
 extern abort_ctx_t *g_abort_ai;
-extern abort_ctx_t *g_abort_comfy;
 void abort_lock(void);
 int ai_aborted(void);                       /* 读 g_abort_ai（AI 请求侧惯用） */
 int abort_ctx_aborted(abort_ctx_t *ctx);

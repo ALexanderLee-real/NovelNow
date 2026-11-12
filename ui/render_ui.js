@@ -157,21 +157,9 @@ $('overlay').addEventListener('click', e => {
  * ============================================================ */
 let page = 'idea';
 
-/* GalNow 子页切换（剧情分支 / 配图工坊）——只切子页签，不动 goPage 主导航 */
-function goGalPane(name) {
-  document.querySelectorAll('#galnowTabs .galnow-tab').forEach(b =>
-    b.classList.toggle('is-active', b.dataset.pane === name));
-  document.querySelectorAll('.page[data-page="galnow"] .galnow-pane').forEach(p =>
-    p.classList.toggle('is-active', p.dataset.pane === name));
-}
-document.addEventListener('click', e => {
-  const t = e.target.closest && e.target.closest('#galnowTabs .galnow-tab');
-  if (t) goGalPane(t.dataset.pane);
-});
-
 function goPage(name) {
   if (name === page) return;
-  /* 空页守卫：目标页不存在（如纯小说版没有 galnow 页时按 Ctrl+4）→ 回退 idea，防全灭空白 */
+  /* 空页守卫：目标页不存在（如快捷键按到未启用的页）→ 回退 idea，防全灭空白 */
   if (!document.querySelector('.page[data-page="' + name + '"]')) name = 'idea';
   if (name === page) return;
   page = name;

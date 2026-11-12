@@ -81,9 +81,9 @@ ai_response_t* ai_chat_single_stream(ai_config_t *cfg, const char *system_prompt
 
 /* ---- 请求中止 ----
  * ai_abort_current：从任意线程调用，立即掐断在途的 AI 请求
- * （阻塞中的读取会立刻失败，错误信息为「操作已被用户取消」，不会触发重试；
- *   只掐 AI 通道，comfy 图片请求走自己的通道，互不打断）。
- * ai_abort_all：关窗等场景把 AI + comfy 两条通道都掐断。
+ * （阻塞中的读取会立刻失败，错误信息为「操作已被用户取消」，不会触发重试）。
+ * ai_abort_all：关窗等场景掐断在途 AI 请求（保留独立入口，语义与
+ *   ai_abort_current 相同）。
  * ai_abort_reset：新任务开始时清除中止标记。 */
 void ai_abort_current(void);
 void ai_abort_all(void);

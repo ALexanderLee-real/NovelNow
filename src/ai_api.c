@@ -21,7 +21,7 @@ static BOOL CALLBACK throttle_init_fn(PINIT_ONCE once, PVOID param, PVOID *ctx)
 /* 请求发出前的节流闸：把相邻两次 AI 请求（含流式）的间隔拉到
    cfg->rate_limit_ms 以上。所有工作线程共用一把闸，全自动写作
    连发请求时也会被依次排开。 */
-/* abortable_sleep 的声明见 ai_internal.h（comfy 轮询也要用） */
+/* abortable_sleep 的声明见 ai_internal.h */
 
 static void ai_throttle_wait(const ai_config_t *cfg)
 {
@@ -117,9 +117,7 @@ struct ai_req_node {
 };
 
 static struct abort_ctx g_ctx_ai = { 0, NULL };
-static struct abort_ctx g_ctx_comfy = { 0, NULL };
 abort_ctx_t *g_abort_ai = &g_ctx_ai;
-abort_ctx_t *g_abort_comfy = &g_ctx_comfy;
 
 static BOOL CALLBACK abort_init_fn(PINIT_ONCE once, PVOID param, PVOID *ctx)
 {
@@ -153,11 +151,10 @@ void ai_abort_current(void)
     abort_ctx_abort(g_abort_ai);
 }
 
-/* 关窗等场景：两条通道都掐，AI 与 comfy 的阻塞读/轮询全部立刻醒 */
+/* 关窗等场景：掐断在途 AI 请求，阻塞读立刻醒 */
 void ai_abort_all(void)
 {
     abort_ctx_abort(g_abort_ai);
-    abort_ctx_abort(g_abort_comfy);
 }
 
 int abort_ctx_aborted(abort_ctx_t *ctx)

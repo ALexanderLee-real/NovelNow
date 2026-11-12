@@ -35,8 +35,6 @@ novel_project_t* project_create(const char *name, const char *seed_idea)
     proj->iteration_round = 0;
     proj->total_words = 0;
     proj->finale_report = str_dup("");
-    proj->gal_json = str_dup("{}");
-    proj->novel_json = str_dup("{}");
     free(ts);
     
     /* 初始化世界观 */
@@ -62,8 +60,6 @@ void project_destroy(novel_project_t *proj)
     if (proj->seed_idea) free(proj->seed_idea);
     if (proj->current_stage) free(proj->current_stage);
     if (proj->finale_report) free(proj->finale_report);
-    if (proj->gal_json) free(proj->gal_json);
-    if (proj->novel_json) free(proj->novel_json);
     
     /* 方向 */
     for (int i = 0; i < proj->direction_count; i++) {
@@ -102,7 +98,6 @@ void project_destroy(novel_project_t *proj)
         if (proj->chapters[i].title) free(proj->chapters[i].title);
         if (proj->chapters[i].summary) free(proj->chapters[i].summary);
         if (proj->chapters[i].content) free(proj->chapters[i].content);
-        if (proj->chapters[i].play_script) free(proj->chapters[i].play_script);
     }
     if (proj->chapters) free(proj->chapters);
 
@@ -291,7 +286,6 @@ void project_clear_chapters(novel_project_t *proj)
         if (ch->title) free(ch->title);
         if (ch->summary) free(ch->summary);
         if (ch->content) free(ch->content);
-        if (ch->play_script) free(ch->play_script);
         memset(ch, 0, sizeof(chapter_t));
     }
     /* 保留已分配数组供复用，仅重置数量；project_destroy 仍会安全释放数组本体 */
@@ -319,7 +313,6 @@ void project_add_chapter(novel_project_t *proj, const char *title, const char *s
     ch->status = 0;
     ch->iteration_count = 0;
     ch->memory_recorded = 0;
-    ch->play_script = str_dup("");
     proj->chapter_count++;
 }
 
@@ -340,21 +333,7 @@ void project_update_chapter_content(novel_project_t *proj, int index, const char
     ch->status = 2;
     /* 正文变了，旧的「实际梗概/伏笔账」不再作数，下次写完重新记账 */
     ch->memory_recorded = 0;
-    /* 演出脚本是正文的派生物，正文一换旧脚本即作废（防演出与原文打架） */
-    if (ch->play_script) { free(ch->play_script); ch->play_script = NULL; }
-    ch->play_script = str_dup("");
     project_calc_total_words(proj);
-}
-
-/* SinkNow：写入章节演出脚本（DSL 文本） */
-void project_set_chapter_play_script(novel_project_t *proj, int index, const char *script)
-{
-    chapter_t *ch = project_get_chapter(proj, index);
-    char *copy;
-    if (!ch) return;
-    copy = safe_dup(script);
-    if (ch->play_script) free(ch->play_script);
-    ch->play_script = copy ? copy : str_dup("");
 }
 
 /* ============== 一致性检查 ============== */
@@ -788,27 +767,6 @@ int project_save(novel_project_t *proj, const char *dir)
     add_string_to_json(root, "seed_idea", proj->seed_idea);
     add_string_to_json(root, "current_stage", proj->current_stage);
     add_string_to_json(root, "finale_report", proj->finale_report);
-    {
-        /* galgame 分支剧情状态：整块 JSON 文本，内嵌为对象。
-           解析失败绝不能静默清空（那等于销毁用户剧情存档）——
-           原文以 "gal_raw" 字符串键保底落盘，load 时优先还原 */
-        cJSON *gal = cJSON_Parse(proj->gal_json ? proj->gal_json : "{}");
-        if (gal) {
-            cJSON_AddItemToObject(root, "gal", gal);
-        } else {
-            cJSON_AddStringToObject(root, "gal_raw", proj->gal_json ? proj->gal_json : "");
-        }
-    }
-    {
-        /* SinkNow 小说演出分析块（剧情梗概+人物定妆表）：同 gal 保底套路，
-           解析失败原文落 "novel_raw"，绝不静默清空 */
-        cJSON *nv = cJSON_Parse(proj->novel_json ? proj->novel_json : "{}");
-        if (nv) {
-            cJSON_AddItemToObject(root, "novel", nv);
-        } else {
-            cJSON_AddStringToObject(root, "novel_raw", proj->novel_json ? proj->novel_json : "");
-        }
-    }
     cJSON_AddNumberToObject(root, "total_words", proj->total_words);
     cJSON_AddNumberToObject(root, "iteration_round", proj->iteration_round);
     
@@ -873,7 +831,6 @@ int project_save(novel_project_t *proj, const char *dir)
         cJSON_AddNumberToObject(c, "status", proj->chapters[i].status);
         cJSON_AddNumberToObject(c, "iteration_count", proj->chapters[i].iteration_count);
         cJSON_AddNumberToObject(c, "memory_recorded", proj->chapters[i].memory_recorded);
-        add_string_to_json(c, "play_script", proj->chapters[i].play_script);
         cJSON_AddItemToArray(chaps, c);
     }
     cJSON_AddItemToObject(root, "chapters", chaps);
@@ -948,27 +905,6 @@ novel_project_t* project_load(const char *path)
     proj->seed_idea = safe_dup(get_json_string(root, "seed_idea"));
     proj->current_stage = safe_dup(get_json_string(root, "current_stage"));
     proj->finale_report = safe_dup(get_json_string(root, "finale_report"));
-    {
-        /* galgame 分支剧情状态（"gal" 对象 <-> gal_json 文本）；
-           "gal_raw" 是保存时解析失败的保底原文，优先级高于空对象 */
-        cJSON *gal = cJSON_GetObjectItem(root, "gal");
-        cJSON *gal_raw = cJSON_GetObjectItem(root, "gal_raw");
-        char *gs = NULL;
-        if (gal) gs = cJSON_PrintUnformatted(gal);
-        else if (gal_raw && cJSON_IsString(gal_raw) && gal_raw->valuestring && *gal_raw->valuestring)
-            gs = str_dup(gal_raw->valuestring);
-        proj->gal_json = gs ? gs : str_dup("{}");
-    }
-    {
-        /* SinkNow 小说演出分析块（"novel" 对象 <-> novel_json 文本） */
-        cJSON *nv = cJSON_GetObjectItem(root, "novel");
-        cJSON *nv_raw = cJSON_GetObjectItem(root, "novel_raw");
-        char *ns = NULL;
-        if (nv) ns = cJSON_PrintUnformatted(nv);
-        else if (nv_raw && cJSON_IsString(nv_raw) && nv_raw->valuestring && *nv_raw->valuestring)
-            ns = str_dup(nv_raw->valuestring);
-        proj->novel_json = ns ? ns : str_dup("{}");
-    }
     
     cJSON *item;
     if ((item = cJSON_GetObjectItem(root, "total_words")) && cJSON_IsNumber(item))
@@ -1070,10 +1006,6 @@ novel_project_t* project_load(const char *path)
                 ch->iteration_count = item->valueint;
             if ((item = cJSON_GetObjectItem(c, "memory_recorded")) && cJSON_IsNumber(item))
                 ch->memory_recorded = item->valueint;
-            if ((item = cJSON_GetObjectItem(c, "play_script")) && cJSON_IsString(item)) {
-                free(ch->play_script);
-                ch->play_script = safe_dup(item->valuestring);
-            }
         }
     }
     

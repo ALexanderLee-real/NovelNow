@@ -47,11 +47,6 @@
         <span>大纲 · 写作</span>
         <em class="nav-badge" data-badge="outline"></em>
       </button>
-      <button class="nav-item" data-page="galnow">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v6a3 3 0 0 0 3 3h6a3 3 0 0 1 3 3v6"/><path d="M18 3v6"/><path d="M6 21v-3"/><circle cx="6" cy="3.5" r="1.5"/><circle cx="18" cy="3.5" r="1.5"/><circle cx="6" cy="20.5" r="1.5"/></svg>
-        <span>SinkNow</span>
-        <em class="nav-badge" data-badge="galnow"></em>
-      </button>
       <button class="nav-item" data-page="settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         <span>设置</span>
@@ -253,148 +248,6 @@
       </div>
     </section>
 
-    <!-- ---------- GalNow（扩展模块：剧情分支 + 配图工坊，页内子页） ---------- -->
-    <section class="page" data-page="galnow">
-      <div class="galnow-tabs" id="galnowTabs">
-        <button class="galnow-tab is-active" data-pane="gal">小说剧场</button>
-        <button class="galnow-tab" data-pane="comfy">配图工坊</button>
-      </div>
-
-      <!-- 子页 1：剧情分支 -->
-      <div class="galnow-pane is-active" data-pane="gal">
-      <header class="page-head">
-        <h1>SinkNow · 小说剧场</h1>
-        <p>丢一篇 TXT 小说进来，AI 扒出剧情和人物、配上立绘与场景，像看故事一样把它读完。</p>
-      </header>
-
-      <div class="gal-layout">
-        <!-- 左：舞台 -->
-        <div class="gal-main">
-          <div class="card">
-            <div class="card-head">
-              <h2>导入与制作</h2>
-              <span class="hint" id="novelPhase">未开始</span>
-            </div>
-            <div class="row-between">
-              <div class="gal-btns">
-                <button class="btn primary" id="novelBtnImport"><i class="step-no" aria-hidden="true">1</i>丢小说进来（TXT）</button>
-                <button class="btn accent" id="novelBtnAnalyze"><i class="step-no" aria-hidden="true">2</i>AI 扒剧情+人物</button>
-                <button class="btn ghost" id="novelBtnFigures"><i class="step-no" aria-hidden="true">3</i>生成人物立绘</button>
-              </div>
-              <div class="gal-btns">
-                <button class="btn ghost" id="novelBtnPrev">上一章</button>
-                <button class="btn primary" id="novelBtnPlay"><i class="step-no" aria-hidden="true">4</i>开演</button>
-                <button class="btn ghost" id="novelBtnNext">下一章</button>
-                <button class="btn ghost" id="novelBtnAuto">自动连播：关</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="card gal-stage" id="galStage">
-            <div class="gal-stage-head">
-              <h2>小说演出</h2>
-              <span class="gal-nametag" id="galNodeInfo">—</span>
-            </div>
-            <!-- 舞台（形似 WebGAL：背景层 + 立绘层 + 黑幕 + 对话框 + 选项 + 快捷条） -->
-            <div class="stage-view" id="stageView">
-              <div class="stage-bgs" id="stageBgs"></div>
-              <div class="stage-vignette"></div>
-              <div class="stage-figs" id="stageFigs">
-                <div class="stage-fig-slot" data-pos="left"></div>
-                <div class="stage-fig-slot" data-pos="center"></div>
-                <div class="stage-fig-slot" data-pos="right"></div>
-              </div>
-              <div class="stage-intro" id="stageIntro" hidden></div>
-              <div class="stage-choices" id="galChoices"></div>
-              <div class="stage-dialog" id="stageDialog">
-                <div class="stage-name" id="stageName" hidden></div>
-                <div class="gal-text" id="galText">
-                  <div class="gal-empty">把 TXT 小说丢进来，SinkNow 把它变成故事。</div>
-                </div>
-                <div class="stage-hint" id="stageHint"></div>
-              </div>
-              <div class="stage-tools">
-                <button class="stage-tool" id="stageBtnAuto" type="button">自动</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 右：章节与人物 -->
-        <div class="gal-side">
-          <div class="card">
-            <div class="card-head"><h2>章节</h2><span class="hint" id="novelPhase2">0 章</span></div>
-            <div class="gal-tree" id="novelChapters"><span class="hint">尚未导入小说</span></div>
-          </div>
-          <div class="card">
-            <div class="card-head"><h2>剧情梗概</h2></div>
-            <div class="hint" id="novelInfo">把 TXT 小说丢进来，SinkNow 把它变成故事</div>
-          </div>
-          <div class="card">
-            <div class="card-head"><h2>人物</h2><span class="hint">定妆表</span></div>
-            <div class="gal-tree" id="novelCast"><span class="hint">人物待扒</span></div>
-          </div>
-        </div>
-      </div>
-      </div><!-- /galnow-pane gal -->
-
-      <!-- 子页 2：配图工坊 -->
-      <div class="galnow-pane" data-pane="comfy">
-      <header class="page-head">
-        <h1>配图工坊</h1>
-        <p>小说剧场的场景背景图与人物立绘，交给本地 ComfyUI 提前生成。</p>
-      </header>
-
-      <div class="card">
-        <div class="card-head"><h2>使用须知</h2><span class="hint">先读这个</span></div>
-        <div class="form">
-          <ol class="comfy-note">
-            <li>需要<strong>本地预装并配置好 ComfyUI</strong>：本程序只负责把生图任务丢给你自己的 ComfyUI，不内置任何生图模型。</li>
-            <li>准备一份<strong>工作流 JSON</strong>（ComfyUI 里「导出 (API)」得到的 API 格式），并把<strong>正向提示词节点的文本里写上 <code>{{PROMPT}}</code></strong> 占位符——生成时会替换成剧情摘要。</li>
-            <li>默认连接 <code>http://127.0.0.1:8188</code>（ComfyUI 默认端口）。本程序只发起<strong>出站</strong>连接，不会占用或开放任何端口。</li>
-            <li>跨机器使用：ComfyUI 启动时加 <code>--listen 0.0.0.0</code> 并放行 8188/TCP，然后把下面的地址改成那台机器的 <code>http://IP:8188</code>。</li>
-            <li>生成的图存在程序目录 <code>舞台图片\</code> 下（每项目一个子文件夹，节点名.png），自动铺到小说剧场的舞台背景。</li>
-          </ol>
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-head"><h2>连接</h2><span class="hint" id="comfyStatus">未测试</span></div>
-          <div class="form">
-            <label class="field"><span>ComfyUI 地址</span><input type="text" id="comfyUrl" placeholder="http://127.0.0.1:8188"></label>
-            <div class="inline-fields wrap">
-              <button class="btn ghost" id="btnComfyTest">测试连接</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><h2>工作流与自动生成</h2></div>
-          <div class="form">
-            <label class="field"><span>工作流 JSON 路径</span>
-              <div class="with-suffix">
-                <input type="text" id="comfyWfPath" placeholder="D:\comfy\my_workflow_api.json">
-                <button class="mini-btn" id="btnComfyPickWf" type="button">选择</button>
-              </div>
-            </label>
-            <label class="switch">
-              <input type="checkbox" id="comfyAutoBg">
-              <span class="track"><i></i></span>
-              <span class="switch-text">自动生成背景
-                <em>剧情推进到下一节之前，提前把下一节的背景图排进 ComfyUI 队列</em>
-              </span>
-            </label>
-            <div class="inline-fields wrap">
-              <button class="btn ghost" id="btnComfyGen">为当前节点生成背景</button>
-              <button class="btn primary" id="btnComfySave">保存配图设置</button>
-            </div>
-          </div>
-        </div>
-      </div>
-      </div><!-- /galnow-pane comfy -->
-    </section>
-
     <!-- ---------- 设置 ---------- -->
     <section class="page" data-page="settings">
       <header class="page-head">
@@ -515,6 +368,7 @@
   <button data-act="genChars">AI 生成人物草稿</button>
   <button data-act="sumWorld">AI 总结世界观</button>
   <button data-act="importTxt">导入 TXT 并分析</button>
+  <button data-act="importNovel">导入 TXT 小说（切章）</button>
   <button data-act="check">一致性检查（选中章节）</button>
   <button data-act="finale">伏笔回收校验（全书）</button>
   <div class="menu-sep"></div>
@@ -532,9 +386,6 @@
 <script src="render_ui.js"></script>
 <script src="render_pages.js"></script>
 <script src="render_forms.js"></script>
-<script src="stage.js"></script>
-<script src="novel.js"></script>
-<script src="comfy.js"></script>
 <script src="actions.js"></script>
 </body>
 </html>

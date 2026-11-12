@@ -164,9 +164,6 @@ cJSON *config_json(void)
     add_str(o, "language",    g.config->language);
     cJSON_AddNumberToObject(o, "autoSaveInterval", g.config->auto_save_interval);
     cJSON_AddBoolToObject(o, "enableConsistencyCheck", g.config->enable_consistency_check ? 1 : 0);
-    add_str(o, "comfyUrl", g.config->comfy_url ? g.config->comfy_url : "");
-    add_str(o, "comfyWorkflowPath", g.config->comfy_workflow_path ? g.config->comfy_workflow_path : "");
-    cJSON_AddBoolToObject(o, "comfyAutoBg", g.config->comfy_auto_bg ? 1 : 0);
     add_str(o, "configPath", cfg_path);
     add_str(o, "exportDir", g.export_dir);
     add_str(o, "lastDoc", g.last_doc);
@@ -261,25 +258,6 @@ void apply_config_json(cJSON *p)
     {
         cJSON *v = cJSON_GetObjectItemCaseSensitive(p, "enableConsistencyCheck");
         if (v) g.config->enable_consistency_check = cJSON_IsTrue(v) ? 1 : 0;
-    }
-    {
-        /* ComfyUI 配图接口：地址/工作流路径/自动生成背景开关 */
-        const char *v = j_str(p, "comfyUrl", NULL);
-        if (v) {
-            free(g.config->comfy_url);
-            g.config->comfy_url = str_dup(v);
-        }
-    }
-    {
-        const char *v = j_str(p, "comfyWorkflowPath", NULL);
-        if (v) {
-            free(g.config->comfy_workflow_path);
-            g.config->comfy_workflow_path = *v ? str_dup(v) : NULL;
-        }
-    }
-    {
-        cJSON *v = cJSON_GetObjectItemCaseSensitive(p, "comfyAutoBg");
-        if (v) g.config->comfy_auto_bg = cJSON_IsTrue(v) ? 1 : 0;
     }
 }
 

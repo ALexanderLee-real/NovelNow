@@ -418,17 +418,6 @@ int launch_thread(LPTHREAD_START_ROUTINE fn, LPVOID param)
     return 1;
 }
 
-/* 不登记版：只给不碰 g.project/g.engine/g.config 的线程用（comfy 配图/探活，
-   自带参数拷贝、最长轮询 5 分钟），免得拖住关窗收场等待 */
-int launch_thread_untracked(LPTHREAD_START_ROUTINE fn, LPVOID param)
-{
-    DWORD tid;
-    HANDLE h = CreateThread(NULL, 0, fn, param, 0, &tid);
-    if (!h) return 0;
-    CloseHandle(h);
-    return 1;
-}
-
 const char *engine_err(void)
 {
     if (g.engine && g.engine->last_error[0]) return g.engine->last_error;

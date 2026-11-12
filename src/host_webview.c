@@ -718,21 +718,6 @@ void handle_task_done(task_done_t *t)
 {
     const char *cmd = t->cmd;
 
-    /* ComfyUI 配图结果：不占忙闲位（没过 try_begin_task），绝不能落进下面
-       通用收尾——那里的 end_task() 会把正在跑的 AI 任务的忙闲状态踩掉，
-       task_done 事件也会让前端误 setBusy(false)。走专用 comfy_done 事件。 */
-    if (strcmp(cmd, "comfy_test") == 0 || strcmp(cmd, "comfy_gen") == 0) {
-        cJSON *d = cJSON_CreateObject();
-        cJSON_AddBoolToObject(d, "ok", t->ok);
-        add_str(d, "cmd", cmd);
-        add_str(d, "message", t->message);
-        if (t->payload) add_str(d, "text", t->payload);  /* {"node":..,"path":..} */
-        push_event("comfy_done", d);
-        push_status(t->message);
-        if (!t->ok) push_toast("error", t->message);
-        return;
-    }
-
     /* 加载项目：把工作线程解析好的 project 换上 */
     if (strcmp(cmd, "load_project") == 0) {
         novel_project_t *proj = (novel_project_t *)t->ptr;
@@ -1061,13 +1046,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         post_retry_clear();
         ask_release_all();
         /* 中止在途 AI 请求，让退避/限流睡眠立刻醒来，工作线程好收场 */
-        ai_abort_all();   /* 关窗：AI + comfy 两条通道都掐（2026-10-19 通道上下文化后 comfy 也可掐） */
+        ai_abort_all();   /* 关窗：掐断在途 AI 请求 */
         /* 等工作线程收场（最多 3 秒），再拆共享对象（P1 竞态）。
            为什么限时：HttpSendRequest 发送阶段不可打断（g_active_req 在发送
            之后才登记），最坏卡 timeout 秒，关窗不能陪它卡。
            为什么超时后不硬拆：engine/project/config 正被工作线程改写，强行
            destroy 就是 UAF（P0-C 的写侧）。不释放只是退出时交进程回收，安全。
-           comfy 线程走 launch_thread_untracked 不占计数。 */
+           全部工作线程都登记进 g_liveThreads（launch_thread 记账），计数归零即全部收场。 */
         {
             int waited = 0;
             while (waited < 30 && InterlockedCompareExchange(&g_liveThreads, 0, 0) > 0) {

@@ -164,12 +164,6 @@ function renderSettings() {
   if (!document.activeElement || document.activeElement.id !== 'consistency') {
     $('consistency').checked = !!c.enableConsistencyCheck;
   }
-  /* 配图工坊（ComfyUI）三件套 */
-  set('comfyUrl', c.comfyUrl || 'http://127.0.0.1:8188');
-  set('comfyWfPath', c.comfyWorkflowPath || '');
-  if ($('comfyAutoBg') && (!document.activeElement || document.activeElement.id !== 'comfyAutoBg')) {
-    $('comfyAutoBg').checked = !!c.comfyAutoBg;
-  }
   renderPresets();
 }
 

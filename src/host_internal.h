@@ -134,15 +134,6 @@ typedef struct {
     char *user_prompt;
 } ai_call_task_t;
 
-/* ComfyUI 配图任务（comfy_gen）：全部字段为快照，线程内不碰 g/config */
-typedef struct {
-    char *node;           /* 图键（大纲节点 id），回执带回前端 */
-    char *url;            /* ComfyUI 基地址 */
-    char *workflow_json;  /* 工作流全文（已注入 {{PROMPT}} 前的原文） */
-    char *prompt;         /* 场景描述 */
-    char *out_path;       /* PNG 落盘路径 */
-} comfy_gen_task_t;
-
 /* ---- global state (definitions in host_bridge.c / host_tasks.c / host_webview.c) ---- */
 extern app_t g;
 extern WCHAR            g_exeDir[MAX_PATH];
@@ -224,9 +215,6 @@ void on_text_delta(const char *delta, void *user_data);
 void task_done_free(task_done_t *t);
 void post_task_done(const char *cmd, int result, int ok,                            const char *message, int chapter);
 int launch_thread(LPTHREAD_START_ROUTINE fn, LPVOID param);
-int launch_thread_untracked(LPTHREAD_START_ROUTINE fn, LPVOID param);
-    /* 不占收场计数：只给不碰 g.project/g.engine/g.config 的线程用
-       （comfy 线程，最长轮询 5 分钟，不能拖住关窗等待） */
 extern volatile LONG g_liveThreads;   /* 在跑的工作线程数（launch_thread 记账） */
 const char *engine_err(void);
 void restart_autosave(void);
@@ -245,8 +233,6 @@ DWORD WINAPI th_analyze_text(LPVOID param);
 DWORD WINAPI th_auto_write(LPVOID param);
 DWORD WINAPI th_fetch_models(LPVOID param);
 DWORD WINAPI th_ai_call(LPVOID param);
-DWORD WINAPI th_comfy_test(LPVOID param);
-DWORD WINAPI th_comfy_gen(LPVOID param);
 DWORD WINAPI th_load_project(LPVOID param);
 int CALLBACK browse_cb(HWND h, UINT msg, LPARAM lp, LPARAM data);
 char *pick_folder_dialog(const char *initial);

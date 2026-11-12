@@ -13,7 +13,7 @@
 #define mkdir(p) _mkdir(p)
 
 /* ===== UTF-8 路径兼容层 =====
-   中文路径（如「舞台图片」）在 GBK 代码页下走窄字符 fopen/mkdir 会建错名或直接失败，
+   中文路径（如「导出目录」）在 GBK 代码页下走窄字符 fopen/mkdir 会建错名或直接失败，
    文件 IO 一律经 UTF-8 -> 宽字符走 *_W API */
 static wchar_t *u8_to_wide(const char *s)
 {
