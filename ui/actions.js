@@ -132,18 +132,20 @@ $('btnAutoWrite').onclick = () => {
   }
 };
 
-$('btnCheck').onclick = () => {
+/* 一致性检查/伏笔回收属低频功能，按钮已从工具栏收进「更多功能」菜单——
+   菜单直呼函数，不再经 DOM 按钮转发（按钮退役，$(...)绑定会拿不到元素） */
+function doCheck() {
   if (S.selChapter < 0) { toast('warn', '请先选择一个章节'); return; }
   fire('check_consistency', { index: S.selChapter });
-};
+}
 
 /* 伏笔回收校验：全书正文完成后跑一次，报告弹层展示 */
-$('btnFinale').onclick = () => {
+function doFinale() {
   if (!S.proj.hasProject) { toast('warn', '请先在「设置」页新建项目'); return; }
   const n = (S.proj.chapters || []).filter(c => c.hasContent).length;
   if (!n) { toast('warn', '还没有任何章节正文，先写作再校验'); return; }
   fire('check_finale', {});
-};
+}
 
 $('btnExport').onclick = () => {
   const dir = outDir();
@@ -425,8 +427,8 @@ $('moreMenu').addEventListener('click', e => {
   const act = b.dataset.act;
   if (act === 'genChars') fire('generate_characters', {});
   else if (act === 'sumWorld') fire('summarize_worldview', {});
-  else if (act === 'check') $('btnCheck').click();
-  else if (act === 'finale') $('btnFinale').click();
+  else if (act === 'check') doCheck();
+  else if (act === 'finale') doFinale();
   else if (act === 'pickOut') $('btnPickOut').click();
   else if (act === 'openOut') fire('open_path', { path: outDir() });
   else if (act === 'reveal') fire('reveal_path', { path: S.cfg.projectsDir });

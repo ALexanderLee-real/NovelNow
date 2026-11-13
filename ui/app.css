@@ -36,7 +36,7 @@
   --warn: #f0a23c;
   --danger: #ff6b6b;
 
-  --sidebar-w: 232px;
+  --sidebar-w: 200px;   /* 侧栏收窄（旧 232px），省出的宽度全给主体 */
   --blur: 30px;
 }
 
@@ -322,11 +322,11 @@ html[data-theme="light"] .card::after { opacity: 0.5; }
   align-items: start;
 }
 .grid-split { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
-.grid-outline { display: grid; grid-template-columns: 240px minmax(0, 1fr) 270px; gap: 16px; align-items: start; }
+.grid-outline { display: grid; grid-template-columns: 216px minmax(0, 1fr) 248px; gap: 14px; align-items: stretch; }
 .stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
-/* 断点按「内容区实际宽度」定：窗口宽度要扣掉侧栏约 240px + 内边距 60px。
-   1360 窗口 ≈ 1060 内容宽，三栏会把写作区挤到不足 500px——所以 1560 以下就该重排。 */
+/* 断点按「内容区实际宽度」定：窗口宽度要扣掉侧栏约 200px + 内边距 60px。
+   1360 窗口 ≈ 1100 内容宽，三栏会把写作区挤到不足 550px——所以 1560 以下就该重排。 */
 @media (max-width: 1560px) {
   .grid-outline { grid-template-columns: 230px minmax(0, 1fr); }
   .grid-outline > .stack { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); }
@@ -407,17 +407,27 @@ textarea.ta {
   resize: vertical; line-height: 1.72;
   min-height: 74px;
 }
-textarea.ta-lg { min-height: 190px; }
+textarea.ta-lg { min-height: 260px; }
 textarea.ta-mono { font-family: var(--mono); font-size: 13.5px; line-height: 1.9; }
+
+/* 正文框吃满写作卡剩余高度：开窗就大（视口驱动，窗口拉大跟着长）。
+   .field.grow 是它的外层 label（flex:1 早在 .field.grow 定义里） */
+.grid-outline .card .form { flex: 1; min-height: 0; }
+.grid-outline textarea.ta-mono {
+  flex: 1 1 auto;
+  min-height: max(430px, calc(100vh - 380px));
+}
 
 input[type="number"] { font-variant-numeric: tabular-nums; }
 
 .inline-fields { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .inline-fields.wrap { flex-wrap: wrap; }
 
-/* 工具栏（大纲页顶部）：两组动作分开放，组间给细分隔线，别挤成一坨 */
-.card.toolbar { gap: 12px; }
-.card.toolbar .inline-fields + .inline-fields { padding-top: 12px; border-top: 1px solid var(--border); }
+/* 工具栏（大纲页顶部）：一行排开，放不下自动换行——按钮永不重叠 */
+.card.toolbar {
+  flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: 10px;
+}
+.card.toolbar .field.sm { width: 132px; margin: 0; }
 .row-between {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 12px; margin-top: 12px; flex-wrap: wrap;
@@ -782,6 +792,20 @@ html[data-theme="light"] .overlay { background: rgba(30, 34, 60, 0.28); }
   100% { background-position: -200% 0; }
 }
 .item.is-ghost .bar + .bar { margin-top: 7px; width: 62%; }
+
+/* ============================================================
+ * 加载效率
+ * ============================================================ */
+/* 长列表不渲染屏外条目：章节多时首绘/滚动更快（intrinsic-size 防滚动条跳动） */
+.list-compact > *, .list > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
+}
+/* 背景三层各自进合成层：卡片的 backdrop-filter 重采样不跟内容重绘联动。
+   只用 translateZ(0)——实验里 will-change 会让屏外合成丢层，不值当 */
+.bg-base, .bg-aurora, .bg-grain {
+  transform: translateZ(0);
+}
 
 .is-hidden { display: none !important; }
 

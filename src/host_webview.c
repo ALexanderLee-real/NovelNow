@@ -490,11 +490,13 @@ void navigate_inline(void)
     strbuf_t *buf;
     char *out;
     WCHAR *wide;
-    /* 通用外链内联：按出现顺序遍历 <link rel="stylesheet" href="X"> 与
-       <script src="X"></script>，逐个读 ui/X 内嵌。UI 已按功能拆成 7 个
-       js 文件（2026-10-18），文件名不再写死，新增文件自动被内联。 */
-    const char *link_prefix = "<link rel=\"stylesheet\" href=\"";
-    const char *script_prefix = "<script src=\"";
+    /* 通用外链内联：按出现顺序扫描 <link ...> 与 <script ...> 开标签，从标签
+       属性里抠 href/src 后读 ui/X 内嵌，文件名不写死、新增文件自动被内联。
+       属性与收尾形态不限（<script src="x" defer></script> 也算）——旧版不仅认
+       字面前缀 "<script src=\""，还要求引号后紧跟 "></script>"，2026-11-13 给
+       script 加 defer 后收尾检查过不了，8 个 js 一个都没内联，NavigateToString
+       （base=about:blank）下外链加载不了，整个 JS 侧静默没跑（点击/快捷键全哑、
+       webui.log 无 <== JS）。血泪教训：别再把匹配写回字面前缀。 */
     if (!html) {
         log_line("!! 读不到 ui/index.html，无法内联");
         return;
@@ -504,8 +506,8 @@ void navigate_inline(void)
     {
         const char *p = html;
         for (;;) {
-            const char *a = strstr(p, link_prefix);
-            const char *b = strstr(p, script_prefix);
+            const char *a = strstr(p, "<link");
+            const char *b = strstr(p, "<script");
             const char *first = NULL;
             int which = 0;
             if (a && (!b || a < b)) { first = a; which = 1; }
@@ -513,29 +515,43 @@ void navigate_inline(void)
             if (!first) break;
             strbuf_append_len(buf, p, (size_t)(first - p));
             {
-                const char *ns = first + strlen((which == 1) ? link_prefix : script_prefix);
-                const char *ne = strchr(ns, '"');
-                char name[128];
-                size_t nlen = ne ? (size_t)(ne - ns) : 0;
+                const char *gt = strchr(first, '>');
+                const char *key = (which == 1) ? "href=\"" : "src=\"";
+                const char *k = gt ? strstr(first, key) : NULL;
+                const char *val = NULL, *vend = NULL;
                 int ok = 0;
-                if (ne && nlen > 0 && nlen < sizeof(name)) {
-                    memcpy(name, ns, nlen);
-                    name[nlen] = '\0';
-                    /* 标签闭合形态：link 以 ">" 结束，script 以 "></script>" 结束 */
-                    if (which == 1) ok = (strncmp(ne + 1, ">", 1) == 0);
-                    else            ok = (strncmp(ne + 1, "></script>", 10) == 0);
-                    if (ok) {
-                        char *content = read_ui_file(name);
+                if (k && k < gt) {
+                    val = k + strlen(key);
+                    vend = strchr(val, '"');
+                    if (vend && vend < gt) {
+                        /* 闭合形态：link 以 ">" 结束（且须是 stylesheet，防 favicon
+                           之类被当 CSS 灌进 style），script 以 "></script>" 紧跟 */
+                        if (which == 1) {
+                            const char *ss = strstr(first, "stylesheet");
+                            ok = (ss && ss < gt);
+                        } else {
+                            ok = (strncmp(gt, "></script>", 10) == 0);
+                        }
+                    }
+                }
+                if (ok) {
+                    char name[128];
+                    size_t nlen = (size_t)(vend - val);
+                    if (nlen > 0 && nlen < sizeof(name)) {
+                        char *content;
+                        memcpy(name, val, nlen);
+                        name[nlen] = '\0';
+                        content = read_ui_file(name);
                         if (which == 1) {
                             strbuf_append(buf, "<style>\n");
                             if (content) strbuf_append(buf, content);
                             strbuf_append(buf, "\n</style>");
-                            p = ne + 2;
+                            p = gt + 1;
                         } else {
                             strbuf_append(buf, "<script>\n");
                             if (content) strbuf_append(buf, content);
                             strbuf_append(buf, "\n</script>");
-                            p = ne + 11;
+                            p = gt + 10;
                         }
                         if (content) free(content);
                         continue;
@@ -1237,10 +1253,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nCmdSh
     wc.hIconSm = wc.hIcon;
     RegisterClassExW(&wc);
 
+    /* 默认窗口 = 屏幕 85%（16:9 100% 缩放下约 1632x918），居中显示。
+       下限 1180x720：再窄工具栏两行会挤。--shot 自动化沿用同尺寸。 */
+    int scrW = GetSystemMetrics(SM_CXSCREEN);
+    int scrH = GetSystemMetrics(SM_CYSCREEN);
+    int winW = scrW * 85 / 100;
+    int winH = scrH * 85 / 100;
+    if (winW < 1180) winW = 1180;
+    if (winH < 720) winH = 720;
+    int winX = (scrW - winW) / 2; if (winX < 0) winX = 0;
+    int winY = (scrH - winH) / 2; if (winY < 0) winY = 0;
+
     hwnd = CreateWindowExW(0, L"novelnowWebUI",
                            L"novelnow · AI 小说写作助手",
                            WS_OVERLAPPEDWINDOW,
-                           CW_USEDEFAULT, CW_USEDEFAULT, 1360, 880,
+                           winX, winY, winW, winH,
                            NULL, NULL, hInst, NULL);
     if (!hwnd) { log_line("!! CreateWindow 失败"); return 1; }
     g.hwnd = hwnd;
@@ -1251,7 +1278,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nCmdSh
        CapturePreview/CDP 会一直挂着不回。故置顶 + 前台。 */
     if (g_shotMode) {
         ShowWindow(hwnd, SW_SHOWNORMAL);
-        SetWindowPos(hwnd, HWND_TOPMOST, 40, 40, 1360, 880,
+        SetWindowPos(hwnd, HWND_TOPMOST, winX, winY, winW, winH,
                      SWP_SHOWWINDOW);
         SetForegroundWindow(hwnd);
         BringWindowToTop(hwnd);

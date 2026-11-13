@@ -173,20 +173,16 @@
         <p>逐章扩写正文。选中的章节可在右侧编辑，AI 生成结果会自动回填。</p>
       </header>
 
+      <!-- 工具栏：核心动作一行排开（flex-wrap 换行不重叠）；一致性检查/伏笔回收
+           属低频功能收进「更多功能」菜单，不再占按钮位 -->
       <div class="card toolbar">
-        <div class="inline-fields">
-          <label class="field sm"><span>目标字数/章</span><input type="number" id="words" value="3000" min="200" max="20000"></label>
-          <button class="btn ghost" id="btnExpandCh" disabled>扩写本章</button>
-          <button class="btn ghost" id="btnExpandAll">扩写全部</button>
-          <button class="btn primary" id="btnStepWrite">逐章生成</button>
-          <button class="btn accent" id="btnAutoWrite">全自动写作</button>
-        </div>
-        <div class="inline-fields">
-          <button class="btn ghost" id="btnCheck">一致性检查</button>
-          <button class="btn ghost" id="btnFinale">伏笔回收校验</button>
-          <button class="btn ghost" id="btnExport">导出 RTF / TXT / EPUB</button>
-          <button class="btn ghost" id="btnMore">更多功能</button>
-        </div>
+        <label class="field sm"><span>目标字数/章</span><input type="number" id="words" value="3000" min="200" max="20000"></label>
+        <button class="btn ghost" id="btnExpandCh" disabled>扩写本章</button>
+        <button class="btn ghost" id="btnExpandAll">扩写全部</button>
+        <button class="btn primary" id="btnStepWrite">逐章生成</button>
+        <button class="btn accent" id="btnAutoWrite">全自动写作</button>
+        <button class="btn ghost" id="btnExport">导出 RTF / TXT / EPUB</button>
+        <button class="btn ghost" id="btnMore">更多功能</button>
       </div>
 
       <div class="grid-outline">
@@ -379,13 +375,13 @@
 
 <div class="toasts" id="toasts"></div>
 
-<script src="i18n-data.js"></script>
-<script src="i18n.js"></script>
-<script src="core.js"></script>
-<script src="state.js"></script>
-<script src="render_ui.js"></script>
-<script src="render_pages.js"></script>
-<script src="render_forms.js"></script>
-<script src="actions.js"></script>
+<script src="i18n-data.js" defer></script>
+<script src="i18n.js" defer></script>
+<script src="core.js" defer></script>
+<script src="state.js" defer></script>
+<script src="render_ui.js" defer></script>
+<script src="render_pages.js" defer></script>
+<script src="render_forms.js" defer></script>
+<script src="actions.js" defer></script>
 </body>
 </html>
